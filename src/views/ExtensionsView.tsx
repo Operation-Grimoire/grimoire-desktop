@@ -257,6 +257,7 @@ export function ExtensionsView({ state }: { state: ReaderState }) {
                       )}
                     </div>
                     <ToggleSwitch
+                      label={`Enable repository ${repo.id}`}
                       checked={repo.enabled}
                       onChange={(enabled) =>
                         rpc("setRepositoryEnabled", { repository: repo.id, enabled })

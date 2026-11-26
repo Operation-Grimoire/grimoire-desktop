@@ -22,6 +22,7 @@ import { HeaderBar } from "../components/HeaderBar";
 import { SearchPill } from "../components/SearchPill";
 import { CoverCard } from "../components/CoverCard";
 import { EmptyState } from "../components/EmptyState";
+import { LibraryUpdateButton } from "../components/LibraryUpdateButton";
 
 type LibrarySort = "LAST_READ" | "TITLE" | "UNREAD" | "TOTAL" | "ADDED" | "RATING";
 
@@ -122,6 +123,11 @@ export function LibraryView({
         right={
           state.library.length > 0 ? (
             <div className="flex items-center gap-1.5">
+              <LibraryUpdateButton
+                state={state}
+                categoryId={activeCategory === "ALL" ? null : activeCategory}
+                label={activeCategory === "ALL" ? "Update" : "Update category"}
+              />
               <SearchPill
                 value={query}
                 onChange={setQuery}

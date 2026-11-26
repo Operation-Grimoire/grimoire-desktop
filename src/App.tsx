@@ -8,6 +8,7 @@ import { BrowseView } from "./views/BrowseView";
 import { BookDetailView } from "./views/BookDetailView";
 import { ReaderView } from "./views/ReaderView";
 import { HistoryView } from "./views/HistoryView";
+import { UpdatesView } from "./views/UpdatesView";
 import { ExtensionsView } from "./views/ExtensionsView";
 import { SettingsView } from "./views/SettingsView";
 
@@ -138,6 +139,9 @@ export default function App() {
       case "LIBRARY":
         rpc("showLibrary");
         break;
+      case "UPDATES":
+        rpc("showUpdates");
+        break;
       case "BROWSE":
         rpc("showBrowse");
         break;
@@ -182,6 +186,9 @@ export default function App() {
           <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg-canvas)]">
             {state.view === "LIBRARY" && (
               <LibraryView state={state} coverBaseUrl={coverBaseUrl} />
+            )}
+            {state.view === "UPDATES" && (
+              <UpdatesView state={state} coverBaseUrl={coverBaseUrl} />
             )}
             {state.view === "BROWSE" && (
               <BrowseView state={state} coverBaseUrl={coverBaseUrl} />

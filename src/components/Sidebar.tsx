@@ -1,4 +1,5 @@
 import {
+  BellDot,
   BookOpen,
   Compass,
   History,
@@ -6,6 +7,7 @@ import {
   Settings,
   WifiOff,
   Library,
+  RefreshCw,
 } from "lucide-react";
 import type { ReaderState, ViewName } from "../api/types";
 
@@ -17,6 +19,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({ state, activeSection, onNavigate, onGoOnline }: SidebarProps) {
+  const unreadUpdates = state.updates.filter((u) => !u.read && !u.locked).length;
   const installedCount = state.extensionRows.filter(
     (r) => r.status === "INSTALLED" || r.status === "UPDATE",
   ).length;
@@ -52,6 +55,15 @@ export function Sidebar({ state, activeSection, onNavigate, onGoOnline }: Sideba
           count={state.library.length}
           active={activeSection === "LIBRARY"}
           onClick={() => onNavigate("LIBRARY")}
+        />
+        <SidebarItem
+          icon={BellDot}
+          label="Updates"
+          count={unreadUpdates}
+          spinning={state.libraryUpdate != null}
+          alert={state.updateIssues.some((i) => i.severity === "ERROR")}
+          active={activeSection === "UPDATES"}
+          onClick={() => onNavigate("UPDATES")}
         />
         <SidebarItem
           icon={Compass}
@@ -109,11 +121,15 @@ function SidebarItem({
   count,
   active,
   onClick,
+  spinning = false,
+  alert = false,
 }: {
   icon: typeof Library;
   label: string;
   count?: number;
   active: boolean;
+  spinning?: boolean;
+  alert?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -132,6 +148,8 @@ function SidebarItem({
         }`}
       />
       <span className="flex-1 truncate text-left">{label}</span>
+      {spinning && <RefreshCw className="h-3 w-3 animate-spin text-[var(--accent)]" aria-label="Updating" />}
+      {alert && !spinning && <span className="h-1.5 w-1.5 rounded-full bg-[var(--danger)]" aria-label="Update issues" />}
       {typeof count === "number" && count > 0 && (
         <span className="text-[11px] tabular-nums text-[var(--text-muted)]">
           {count}

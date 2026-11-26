@@ -62,7 +62,7 @@ fun main(args: Array<String>) {
 
     val library = LocalLibrary(data)
     val extensions = ExtensionManager(library, hostApi, HttpArtifactFetcher(networkEnabled), listOf(OFFICIAL_REPOSITORY))
-    val model = desktopReaderModel(library, hostApi, networkEnabled, extensions)
+    val model = desktopReaderModel(library, hostApi, networkEnabled, extensions, startScheduler = true)
     options["--extension"]?.let { model.load(Paths.get(it)) }
 
     val writeLock = Any()
@@ -127,6 +127,29 @@ fun main(args: Array<String>) {
 private fun dispatchMethod(method: String, params: JSONObject, model: ReaderModel, scope: CoroutineScope) {
     when (method) {
         "showLibrary" -> model.showLibrary()
+        "showUpdates" -> model.showUpdates()
+        "updateLibrary" -> model.updateLibrary(
+            if (params.has("categoryId") && !params.isNull("categoryId")) params.getLong("categoryId") else null,
+        )
+        "cancelLibraryUpdate" -> model.cancelLibraryUpdate()
+        "readUpdate" -> model.readUpdate(params.getLong("id"))
+        "markUpdatesRead" -> model.markUpdatesRead(params.longs("ids"), params.getBoolean("read"))
+        "downloadUpdates" -> model.downloadUpdates(params.longs("ids"))
+        "removeUpdates" -> model.removeUpdates(params.longs("ids"))
+        "clearUpdates" -> model.clearUpdates()
+        "retryUpdateIssue" -> model.retryUpdateIssue(NovelKey(params.getLong("sourceId"), params.getString("novelUrl")))
+        "dismissUpdateIssue" -> model.dismissUpdateIssue(NovelKey(params.getLong("sourceId"), params.getString("novelUrl")))
+        "clearUpdateIssues" -> model.clearUpdateIssues()
+        // A partial patch, merged against the latest settings inside the model.
+        "setLibraryUpdateSettings" -> model.changeLibraryUpdateSettings { current ->
+            current.copy(
+                updateOnLaunch = params.optBoolean("updateOnLaunch", current.updateOnLaunch),
+                autoUpdate = params.optBoolean("autoUpdate", current.autoUpdate),
+                intervalHours = params.optInt("intervalHours", current.intervalHours),
+                concurrency = params.optInt("concurrency", current.concurrency),
+                skipCompleted = params.optBoolean("skipCompleted", current.skipCompleted),
+            )
+        }
         "showBrowse" -> model.showBrowse()
         "showHistory" -> model.showHistory()
         "showExtensions" -> model.showExtensions()
@@ -254,7 +277,8 @@ private fun dispatchMethod(method: String, params: JSONObject, model: ReaderMode
             val key = NovelKey(params.getLong("sourceId"), params.getString("novelUrl"))
             val book = model.state.value.library.firstOrNull { it.key == key }
                 ?: error("Book not found in library")
-            model.openSaved(book)
+            val origin = if (params.optString("origin") == "UPDATES") View.UPDATES else View.LIBRARY
+            model.openSaved(book, origin)
         }
 
         "read" -> {
@@ -390,6 +414,41 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
             .put("isDefault", c.isDefault)
             .put("isHidden", c.isHidden)
     }))
+    .put("updates", updatesJson())
+    .put("updateIssues", JSONArray(updateIssues.filter { issue -> library.any { it.key == issue.key } }.map { issue ->
+        JSONObject()
+            .put("sourceId", issue.key.sourceId)
+            .put("novelUrl", issue.key.url)
+            .put("novelTitle", issue.novelTitle)
+            .put("severity", issue.severity.name)
+            .put("message", issue.message)
+            .put("occurredAt", issue.occurredAt)
+            .put("retrying", issue.key in retryingIssues)
+    }))
+    .put("libraryUpdate", libraryUpdate?.let { p ->
+        JSONObject()
+            .put("done", p.done)
+            .put("total", p.total)
+            .put("current", p.current ?: JSONObject.NULL)
+            .put("categoryId", p.categoryId ?: JSONObject.NULL)
+    } ?: JSONObject.NULL)
+    .put("lastLibraryUpdate", lastLibraryUpdate?.let { s ->
+        JSONObject()
+            .put("finishedAt", s.finishedAt)
+            .put("checked", s.checked)
+            .put("newChapters", s.newChapters)
+            .put("warnings", s.warnings)
+            .put("errors", s.errors)
+            .put("cancelled", s.cancelled)
+            .put("failed", s.failed)
+            .put("categoryId", s.categoryId ?: JSONObject.NULL)
+    } ?: JSONObject.NULL)
+    .put("libraryUpdateSettings", JSONObject()
+        .put("updateOnLaunch", libraryUpdateSettings.updateOnLaunch)
+        .put("autoUpdate", libraryUpdateSettings.autoUpdate)
+        .put("intervalHours", libraryUpdateSettings.intervalHours)
+        .put("concurrency", libraryUpdateSettings.concurrency)
+        .put("skipCompleted", libraryUpdateSettings.skipCompleted))
     .put("appearance", JSONObject()
         .put("themeMode", appearance.themeMode.name)
         .put("colorTheme", appearance.colorTheme.name))
@@ -405,6 +464,35 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
         .put("grimoireEasterEgg", readerSettings.grimoireEasterEgg)
         .put("markAsReadStrategy", readerSettings.markAsReadStrategy.name)
         .put("markAsReadThreshold", readerSettings.markAsReadThreshold))
+
+/** Feed rows for library novels only; read, download and lock state come from the live book. */
+private fun ReaderState.updatesJson(): JSONArray {
+    if (updates.isEmpty()) return JSONArray()
+    val books = library.associateBy { it.key }
+    val chaptersByBook = HashMap<NovelKey, Map<String, Chapter>>()
+    return JSONArray(updates.mapNotNull { entry ->
+        val book = books[entry.key.novel] ?: return@mapNotNull null
+        val chapter = chaptersByBook.getOrPut(book.key) { book.chapters.associateBy { it.url } }[entry.key.url]
+        val novel = book.effectiveNovel()
+        JSONObject()
+            .put("id", entry.id)
+            .put("sourceId", entry.key.novel.sourceId)
+            .put("novelUrl", entry.key.novel.url)
+            .put("chapterUrl", entry.key.url)
+            .put("novelTitle", novel.title)
+            .put("thumbnailUrl", novel.thumbnailUrl ?: JSONObject.NULL)
+            .put("chapterName", chapter?.name ?: entry.chapterName)
+            .put("chapterNumber", entry.chapterNumber.toDouble())
+            .put("foundAt", entry.foundAt)
+            .put("locked", chapter?.locked ?: entry.locked)
+            .put("unlocked", entry.unlocked)
+            .put("read", entry.key.url in book.readChapters)
+            .put("downloaded", entry.key.url in book.downloaded)
+    })
+}
+
+private fun JSONObject.longs(name: String): List<Long> =
+    getJSONArray(name).let { array -> (0 until array.length()).map(array::getLong) }
 
 private fun Novel.toJson(): JSONObject = JSONObject()
     .put("url", url)

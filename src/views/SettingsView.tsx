@@ -1,5 +1,6 @@
-import { Check, Monitor, Moon, Sun, WifiOff } from "lucide-react";
-import type { ColorTheme, ReaderState, ThemeMode } from "../api/types";
+import type { ReactNode } from "react";
+import { Check, Monitor, Moon, RefreshCw, Sun, WifiOff } from "lucide-react";
+import type { ColorTheme, LibraryUpdateSettings, ReaderState, ThemeMode } from "../api/types";
 import { rpc } from "../api/client";
 import { HeaderBar } from "../components/HeaderBar";
 import { ToggleSwitch } from "./HistoryView";
@@ -12,6 +13,16 @@ const PALETTES: { id: ColorTheme; label: string; dots: [string, string, string] 
   { id: "FOREST", label: "Forest", dots: ["#4ade80", "#86efac", "#6ee7b7"] },
   { id: "ROSE", label: "Rose", dots: ["#f472b6", "#fda4af", "#fdba74"] },
   { id: "MIDNIGHT", label: "Midnight", dots: ["#818cf8", "#94a3b8", "#c084fc"] },
+];
+
+const INTERVALS: { hours: number; label: string }[] = [
+  { hours: 1, label: "Every hour" },
+  { hours: 3, label: "Every 3 hours" },
+  { hours: 6, label: "Every 6 hours" },
+  { hours: 12, label: "Every 12 hours" },
+  { hours: 24, label: "Daily" },
+  { hours: 48, label: "Every 2 days" },
+  { hours: 168, label: "Weekly" },
 ];
 
 const THEME_MODES: { id: ThemeMode; label: string; icon: typeof Sun }[] = [
@@ -111,6 +122,9 @@ export function SettingsView({ state }: { state: ReaderState }) {
             </div>
           </section>
 
+          {/* Library updates */}
+          <LibraryUpdatesSection state={state} />
+
           {/* Network */}
           <section className="border-t border-[var(--border-hairline)] pt-6">
             <h2 className="text-[11.5px] font-semibold uppercase tracking-wider text-[var(--accent)]">
@@ -130,6 +144,7 @@ export function SettingsView({ state }: { state: ReaderState }) {
                 </div>
               </div>
               <ToggleSwitch
+                label="Offline mode"
                 checked={state.offline}
                 onChange={(offline) => rpc("offline", { offline })}
               />
@@ -137,6 +152,110 @@ export function SettingsView({ state }: { state: ReaderState }) {
           </section>
         </div>
       </div>
+    </div>
+  );
+}
+
+function LibraryUpdatesSection({ state }: { state: ReaderState }) {
+  const settings = state.libraryUpdateSettings;
+  const save = (change: Partial<LibraryUpdateSettings>) => rpc("setLibraryUpdateSettings", change);
+  const intervals = INTERVALS.some((i) => i.hours === settings.intervalHours)
+    ? INTERVALS
+    : [...INTERVALS, { hours: settings.intervalHours, label: `Every ${settings.intervalHours} hours` }];
+
+  return (
+    <section className="border-t border-[var(--border-hairline)] pt-6">
+      <h2 className="text-[11.5px] font-semibold uppercase tracking-wider text-[var(--accent)]">
+        Library updates
+      </h2>
+      <p className="mt-1 text-[12px] text-[var(--text-secondary)]">
+        Checks run only while Grimoire is open.
+      </p>
+
+      <div className="mt-3 divide-y divide-[var(--border-hairline)] rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-surface)]/60">
+        <SettingRow title="Check on launch" subtitle="Update the library a few seconds after Grimoire starts.">
+          <ToggleSwitch label="Check on launch" checked={settings.updateOnLaunch} onChange={(v) => save({ updateOnLaunch: v })} />
+        </SettingRow>
+        <SettingRow title="Automatic updates" subtitle="Update the library again on a schedule.">
+          <ToggleSwitch label="Automatic updates" checked={settings.autoUpdate} onChange={(v) => save({ autoUpdate: v })} />
+        </SettingRow>
+        {settings.autoUpdate && (
+          <SettingRow title="Frequency" subtitle="Counted from the later of the last completed whole-library update or the last automatic attempt. Category updates don't move it.">
+            <select
+              aria-label="Automatic update frequency"
+              value={settings.intervalHours}
+              onChange={(e) => save({ intervalHours: Number(e.target.value) })}
+              className="h-8 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-elevated)] px-2 text-[12.5px] text-[var(--text-primary)]"
+            >
+              {intervals.map((i) => (
+                <option key={i.hours} value={i.hours}>
+                  {i.label}
+                </option>
+              ))}
+            </select>
+          </SettingRow>
+        )}
+        <SettingRow title="Skip completed novels" subtitle="Novels marked completed are not checked.">
+          <ToggleSwitch label="Skip completed novels" checked={settings.skipCompleted} onChange={(v) => save({ skipCompleted: v })} />
+        </SettingRow>
+        <SettingRow
+          title="Parallel checks"
+          subtitle="Novels checked at once. Each source still gets one request at a time."
+        >
+          <div role="group" aria-label="Parallel checks" className="inline-flex items-center gap-1">
+            {[1, 2, 4, 6, 8].map((n) => {
+              const selected = settings.concurrency === n;
+              return (
+                <button
+                  key={n}
+                  type="button"
+                  aria-pressed={selected}
+                  aria-label={`${n} at once`}
+                  onClick={() => save({ concurrency: n })}
+                  className={`h-7 w-7 rounded-lg border text-[12px] tabular-nums transition-colors ${
+                    selected
+                      ? "border-[var(--accent)] bg-[var(--accent-soft)] font-bold text-[var(--accent)] underline underline-offset-2"
+                      : "border-transparent font-medium text-[var(--text-secondary)] hover:bg-[var(--row-hover)] hover:text-[var(--text-primary)]"
+                  }`}
+                >
+                  {n}
+                </button>
+              );
+            })}
+          </div>
+        </SettingRow>
+      </div>
+
+      {state.lastLibraryUpdate && (
+        <div className="mt-2.5 flex items-center gap-1.5 text-[12px] text-[var(--text-muted)]">
+          <RefreshCw className="h-3 w-3" />
+          Last update{state.lastLibraryUpdate.categoryId != null ? " (one category)" : ""}{" "}
+          {new Date(state.lastLibraryUpdate.finishedAt).toLocaleString()} ·{" "}
+          {state.lastLibraryUpdate.newChapters} new
+          {state.lastLibraryUpdate.errors > 0 ? ` · ${state.lastLibraryUpdate.errors} failed` : ""}
+          {state.lastLibraryUpdate.failed ? " · failed" : state.lastLibraryUpdate.cancelled ? " · cancelled" : ""}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SettingRow({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 px-4 py-3.5">
+      <div className="min-w-0">
+        <div className="text-[13.5px] font-medium text-[var(--text-primary)]">{title}</div>
+        <div className="text-[12px] text-[var(--text-secondary)]">{subtitle}</div>
+      </div>
+      {children}
     </div>
   );
 }
