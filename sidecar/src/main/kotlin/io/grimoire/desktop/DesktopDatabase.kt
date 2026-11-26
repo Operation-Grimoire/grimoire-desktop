@@ -68,7 +68,8 @@ internal class DesktopDatabase(
                 if (oldVersion == 1L) connection.execute(CREATE_READING_CHECKPOINTS)
                 if (oldVersion < 3L) createReadingStateTables(connection)
                 if (oldVersion < 4L) connection.execute(CREATE_OPENED_HISTORY)
-                createExtensionTables(connection)
+                if (oldVersion < 5L) createExtensionTables(connection)
+                if (oldVersion < 6L) connection.execute(CREATE_CATEGORIES)
                 connection.execute("PRAGMA user_version=$DESKTOP_SCHEMA_VERSION")
             }
             // The exclusive lease proves the previous process cannot still complete a callback.
@@ -151,6 +152,7 @@ internal class DesktopDatabase(
                 createReadingStateTables(db)
                 db.execute(CREATE_OPENED_HISTORY)
                 createExtensionTables(db)
+                db.execute(CREATE_CATEGORIES)
                 db.execute("INSERT INTO settings VALUES('id',?),('phase','imported')", UUID.randomUUID().toString())
                 books.forEach { book -> db.execute("INSERT INTO books VALUES(?,?,?)", book.key.sourceId, book.key.url,
                     encodeBook(book).apply { remove("downloaded") }.toString()) }
@@ -277,7 +279,14 @@ private fun createReadingStateTables(db: Connection) {
         PRIMARY KEY(source_id,novel_url,chapter_url,command_id), FOREIGN KEY(source_id,novel_url) REFERENCES books(source_id,novel_url) ON DELETE CASCADE)""")
 }
 
-private const val DESKTOP_SCHEMA_VERSION = 5L
+private const val DESKTOP_SCHEMA_VERSION = 6L
+
+private const val CREATE_CATEGORIES = """CREATE TABLE IF NOT EXISTS categories(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_default INTEGER NOT NULL DEFAULT 0 CHECK(is_default IN (0,1)),
+    is_hidden INTEGER NOT NULL DEFAULT 0 CHECK(is_hidden IN (0,1)))"""
 
 // History snapshots survive library metadata changes and have no foreign key.
 private const val CREATE_OPENED_HISTORY = """CREATE TABLE opened_history(

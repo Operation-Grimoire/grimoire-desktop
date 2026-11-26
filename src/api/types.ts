@@ -20,6 +20,8 @@ export type BrowseMode = "POPULAR" | "LATEST" | "SEARCH";
 export type ReaderFont = "DEFAULT" | "SERIF" | "MONOSPACE";
 export type ReaderColorTheme = "LIGHT" | "SEPIA" | "DARK" | "BLACK";
 export type ReaderTextAlign = "AUTO" | "LEFT" | "RIGHT" | "CENTER" | "JUSTIFY";
+export type ChapterSort = "NUMBER_ASC" | "NUMBER_DESC" | "DATE_ASC" | "DATE_DESC";
+export type MarkAsReadStrategy = "PERCENT" | "PARAGRAPHS_FROM_END" | "AT_END";
 export type ExtensionStatus =
   | "INSTALLED"
   | "UPDATE"
@@ -32,6 +34,23 @@ export interface BrowseSource {
   sourceId: number;
   name: string;
   lang: string;
+}
+
+export interface DesktopCategory {
+  id: number;
+  name: string;
+  sortOrder: number;
+  isDefault: boolean;
+  isHidden: boolean;
+}
+
+export interface NovelOverrides {
+  title: string | null;
+  author: string | null;
+  description: string | null;
+  status: string | null;
+  genres: string[] | null;
+  customCoverUrl: string | null;
 }
 
 export interface Novel {
@@ -49,8 +68,10 @@ export interface Chapter {
   url: string;
   name: string;
   chapterNumber: number;
+  uploadDate: number;
   locked: boolean;
   downloaded?: boolean;
+  read?: boolean;
 }
 
 export interface ReadPosition {
@@ -63,9 +84,20 @@ export interface SavedBook {
   sourceId: number;
   novelUrl: string;
   novel: Novel;
+  sourceNovel: Novel;
+  overrides: NovelOverrides;
   favorite: boolean;
+  categoryId: number | null;
+  lastReadAt: number;
+  lastUpdated: number;
+  addedAt: number;
+  userRating: number | null;
+  readerTextAlign: ReaderTextAlign;
+  chapterSortOrder: ChapterSort;
   totalChapters: number;
   downloadedCount: number;
+  readCount: number;
+  unreadCount: number;
   lockedCount: number;
   resumeChapterUrl: string | null;
   position: ReadPosition | null;
@@ -138,6 +170,8 @@ export interface DesktopReaderSettings {
   showChapterPercent: boolean;
   showBookPercent: boolean;
   grimoireEasterEgg: boolean;
+  markAsReadStrategy: MarkAsReadStrategy;
+  markAsReadThreshold: number;
 }
 
 export interface ReaderState {
@@ -158,6 +192,7 @@ export interface ReaderState {
   localExtension: string | null;
   positionNotice: string | null;
   sources: BrowseSource[];
+  categories: DesktopCategory[];
   library: SavedBook[];
   novels: Novel[];
   book: SavedBook | null;

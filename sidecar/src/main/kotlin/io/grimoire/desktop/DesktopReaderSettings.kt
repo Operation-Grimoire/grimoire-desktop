@@ -15,12 +15,15 @@ data class DesktopReaderSettings(
     val showChapterPercent: Boolean = true,
     val showBookPercent: Boolean = true,
     val grimoireEasterEgg: Boolean = true,
+    val markAsReadStrategy: MarkAsReadStrategy = MarkAsReadStrategy.PERCENT,
+    val markAsReadThreshold: Int = 85,
 ) {
     /** Clamps to the ranges the settings sheet offers. */
     fun normalized() = copy(
         fontSize = fontSize.coerceIn(12, 32),
         lineHeightTimes10 = lineHeightTimes10.coerceIn(10, 30),
         paragraphSpacing = paragraphSpacing.coerceIn(0, 32),
+        markAsReadThreshold = markAsReadThreshold.coerceIn(50, 100),
     )
 }
 
@@ -28,13 +31,17 @@ internal fun DesktopReaderSettings.encode(): String = JSONObject()
     .put("fontSize", fontSize).put("lineHeightTimes10", lineHeightTimes10).put("paragraphSpacing", paragraphSpacing)
     .put("font", font.name).put("colorTheme", colorTheme?.name ?: "").put("textAlign", textAlign.name)
     .put("showChapterPercent", showChapterPercent).put("showBookPercent", showBookPercent)
-    .put("grimoireEasterEgg", grimoireEasterEgg).toString()
+    .put("grimoireEasterEgg", grimoireEasterEgg)
+    .put("markAsReadStrategy", markAsReadStrategy.name)
+    .put("markAsReadThreshold", markAsReadThreshold)
+    .toString()
 
 /** Missing, unknown or malformed values fall back to their defaults one by one. */
 internal fun decodeReaderSettings(raw: String?): DesktopReaderSettings {
     val defaults = DesktopReaderSettings()
     val json = raw?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return defaults
-    fun <T : Enum<T>> enum(key: String, entries: List<T>, fallback: T?) = json.optString(key).let { name -> entries.firstOrNull { it.name == name } } ?: fallback
+    fun <T : Enum<T>> enum(key: String, entries: List<T>, fallback: T?) =
+        json.optString(key).let { name -> entries.firstOrNull { it.name == name } } ?: fallback
     return DesktopReaderSettings(
         fontSize = json.optInt("fontSize", defaults.fontSize),
         lineHeightTimes10 = json.optInt("lineHeightTimes10", defaults.lineHeightTimes10),
@@ -45,6 +52,8 @@ internal fun decodeReaderSettings(raw: String?): DesktopReaderSettings {
         showChapterPercent = json.optBoolean("showChapterPercent", defaults.showChapterPercent),
         showBookPercent = json.optBoolean("showBookPercent", defaults.showBookPercent),
         grimoireEasterEgg = json.optBoolean("grimoireEasterEgg", defaults.grimoireEasterEgg),
+        markAsReadStrategy = enum("markAsReadStrategy", MarkAsReadStrategy.entries, defaults.markAsReadStrategy)!!,
+        markAsReadThreshold = json.optInt("markAsReadThreshold", defaults.markAsReadThreshold),
     ).normalized()
 }
 

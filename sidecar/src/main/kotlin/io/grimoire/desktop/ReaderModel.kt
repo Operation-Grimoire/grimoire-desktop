@@ -17,6 +17,8 @@ import io.grimoire.reading.ChapterLoadFailure
 import io.grimoire.reading.ChapterLoadException
 import io.grimoire.reading.storage.*
 import io.grimoire.reading.anchor.*
+import io.grimoire.reading.state.ReadingCompletionInput
+import io.grimoire.reading.state.ReadingStateFacade
 import io.grimoire.reading.encodeChapterContent
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -64,6 +66,7 @@ data class ReaderState(
     val localExtension: String? = null,
     val appearance: DesktopAppearance = DesktopAppearance(),
     val readerSettings: DesktopReaderSettings = DesktopReaderSettings(),
+    val categories: List<DesktopCategory> = emptyList(),
 )
 
 data class BrowseSource(val sourceId: Long, val name: String, val lang: String)
@@ -82,6 +85,7 @@ class ReaderModel(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + operationDispatcher)
     private val checkpoints = ReaderCheckpoints(checkpointDao)
+    private val readingStates = ReadingStateFacade(DesktopReadingStateDao(library), backfill = null)
     private val closing = AtomicBoolean(false)
     private val storageClosed = AtomicBoolean(false)
     private val closeWrites = Mutex()
@@ -90,7 +94,15 @@ class ReaderModel(
     private val installed = linkedMapOf<String, LocalExtension>()
     private var sessionExtension: LocalExtension? = null
     private var extensionFailures: Map<String, String> = emptyMap()
-    private val mutable = MutableStateFlow(ReaderState(library = library.saved(), historyRecording = library.historyRecording(), appearance = library.appearance(), readerSettings = library.readerSettings()))
+    private val mutable = MutableStateFlow(
+        ReaderState(
+            library = library.saved(),
+            historyRecording = library.historyRecording(),
+            appearance = library.appearance(),
+            readerSettings = library.readerSettings(),
+            categories = library.categories(),
+        ),
+    )
     // The history worker is drained separately from navigation jobs before closing the store.
     private val historyScope = CoroutineScope(SupervisorJob() + operationDispatcher)
     private val historyWrites = OpenedHistoryWrites(historyScope, DesktopOpenedHistoryDao(library)) { failure ->
@@ -481,7 +493,170 @@ class ReaderModel(
         val book = current.book ?: error("Open a novel first")
         val chapter = current.chapter ?: error("Open a chapter first")
         val target = adjacentChapter(book.chapters, chapter, step) ?: error(if (step < 0) "This is the first chapter" else "This is the last chapter")
-        readChapter(book, target, current.bookOrigin)
+        if (step > 0) {
+            val currentKey = ChapterKey(book.key, chapter.url)
+            val input = ReadingCompletionInput.Next(
+                key = currentKey,
+                loadedChapter = currentKey,
+                hasSuccessor = true,
+                atMillis = System.currentTimeMillis(),
+            )
+            readingStates.prepareExplicit(input)?.let { readingStates.submit(it) }
+        }
+        val refreshedBook = library.book(book.key) ?: book
+        readChapter(refreshedBook, target, current.bookOrigin)
+    }
+
+    /** Marks the active chapter in Reader read (e.g. after scrolling past threshold) without interrupting reading. */
+    fun markCurrentChapterRead() {
+        val current = state.value
+        val book = current.book ?: return
+        val chapter = current.chapter ?: return
+        if (current.view != View.READER || chapter.url in book.readChapters) return
+        val key = ChapterKey(book.key, chapter.url)
+        synchronized(operationLock) {
+            if (closing.get()) return
+            settingsScope.launch {
+                runCatching {
+                    val input = ReadingCompletionInput.MarkRead(key, System.currentTimeMillis())
+                    readingStates.prepareExplicit(input)?.let { readingStates.submit(it) }
+                    val updated = library.book(book.key)
+                    mutable.update { st ->
+                        st.copy(
+                            book = if (st.book?.key == book.key && updated != null) updated else st.book,
+                            library = library.saved(),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun markChaptersRead(chapterUrls: List<String>, read: Boolean) = operate {
+        val book = state.value.book ?: error("Open a novel first")
+        val now = System.currentTimeMillis()
+        chapterUrls.distinct().forEach { url ->
+            val key = ChapterKey(book.key, url)
+            val input = if (read) ReadingCompletionInput.MarkRead(key, now) else ReadingCompletionInput.MarkUnread(key)
+            readingStates.prepareExplicit(input)?.let { readingStates.submit(it) }
+        }
+        val updated = library.book(book.key)
+        mutable.update { it.copy(book = updated ?: it.book, library = library.saved()) }
+    }
+
+    fun refreshBook() = operate {
+        val current = state.value.book ?: error("Open a novel first")
+        check(!state.value.offline) { "Go online to refresh this novel" }
+        val loaded = extensionFor(current.key.sourceId) ?: error("This novel's source is not installed")
+        val source = loaded.source
+        check(source is ChapterListSource || source is CursorPaginatedSource) { "This source's chapter list is unsupported" }
+        val details = source.getNovelDetails(current.novel)
+        val chapters = sourceChapters(source, details)
+        check(chapters.isNotEmpty()) { "The source returned no chapters" }
+        val refreshed = library.remember(current.key, details, chapters)
+        mutable.update { it.copy(book = refreshed, library = library.saved()) }
+    }
+
+    fun downloadChapters(chapterUrls: List<String>) = operate {
+        val book = state.value.book ?: error("Open a novel first")
+        check(!state.value.offline) { "Go online to download chapters" }
+        val loaded = extensionFor(book.key.sourceId) ?: error("Install this novel's extension to download chapters")
+        val source = loaded.source as? PageListSource ?: error("This source cannot provide chapter pages")
+        val chaptersByUrl = book.chapters.associateBy { it.url }
+        for (url in chapterUrls.distinct()) {
+            val chapter = chaptersByUrl[url] ?: continue
+            if (chapter.locked || url in book.downloaded) continue
+            val key = ChapterKey(book.key, url)
+            val attempt = downloads.claim(key) ?: continue
+            try {
+                val pages = source.getPageList(chapter)
+                check(downloads.commit(attempt, pages) is DownloadCommit.Committed) { "Could not save ${chapter.name}" }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                runCatching { downloads.fail(attempt, DownloadFailure.ERROR) }
+                throw failure
+            }
+            mutable.update { it.copy(book = library.book(book.key) ?: it.book, library = library.saved()) }
+        }
+    }
+
+    fun deleteDownloads(chapterUrls: List<String>) = operate {
+        val book = state.value.book ?: error("Open a novel first")
+        chapterUrls.distinct().forEach { url ->
+            library.deleteDownload(ChapterKey(book.key, url))
+        }
+        mutable.update { it.copy(book = library.book(book.key) ?: it.book, library = library.saved()) }
+    }
+
+    fun removeFromLibrary(key: NovelKey) = operate {
+        val updated = setMembership(key, false)
+        mutable.update { st ->
+            st.copy(
+                book = if (st.book?.key == key) updated else st.book,
+                library = library.saved(),
+            )
+        }
+    }
+
+    fun createCategory(name: String) = operate {
+        val cats = library.createCategory(name)
+        mutable.update { it.copy(categories = cats) }
+    }
+
+    fun renameCategory(id: Long, name: String) = operate {
+        val cats = library.renameCategory(id, name)
+        mutable.update { it.copy(categories = cats) }
+    }
+
+    fun deleteCategory(id: Long) = operate {
+        val cats = library.deleteCategory(id)
+        val activeBook = state.value.book?.let { library.book(it.key) }
+        mutable.update { it.copy(categories = cats, library = library.saved(), book = activeBook ?: it.book) }
+    }
+
+    fun setBookCategory(key: NovelKey, categoryId: Long?) = mutateBook(key) { it.copy(categoryId = categoryId) }
+
+    fun setBookRating(key: NovelKey, rating: Int?) = mutateBook(key) {
+        it.copy(userRating = rating?.coerceIn(1, 10))
+    }
+
+    fun setBookChapterSort(key: NovelKey, sort: ChapterSort) = mutateBook(key) {
+        it.copy(chapterSortOrder = sort)
+    }
+
+    fun setBookTextAlign(key: NovelKey, align: ReaderTextAlign) = mutateBook(key) {
+        it.copy(readerTextAlign = align)
+    }
+
+    fun setBookOverrides(key: NovelKey, overrides: NovelOverrides) = mutateBook(key) {
+        it.copy(overrides = overrides)
+    }
+
+    private fun mutateBook(key: NovelKey, transform: (SavedBook) -> SavedBook) {
+        synchronized(operationLock) {
+            if (closing.get()) return
+            mutable.update { st ->
+                st.copy(
+                    book = if (st.book?.key == key) transform(st.book) else st.book,
+                    library = st.library.map { if (it.key == key) transform(it) else it },
+                    error = null,
+                )
+            }
+            settingsScope.launch {
+                try {
+                    val saved = library.updateBookMetadata(key, transform)
+                    mutable.update { st ->
+                        st.copy(
+                            book = if (st.book?.key == key && saved != null) saved else st.book,
+                            library = library.saved(),
+                        )
+                    }
+                } catch (failure: Exception) {
+                    mutable.update { it.copy(error = "Could not update book: ${failure.message ?: failure.javaClass.simpleName}") }
+                }
+            }
+        }
     }
 
     fun removeHistory(id: Long) = changeHistory { historyWrites.delete(listOf(id))!!.await().getOrThrow() }
