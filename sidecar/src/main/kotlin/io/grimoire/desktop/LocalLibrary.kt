@@ -39,6 +39,8 @@ data class SavedBook(
     val chapterSortOrder: ChapterSort = ChapterSort.NUMBER_ASC,
     val overrides: NovelOverrides = NovelOverrides(),
     val readChapters: Set<String> = emptySet(),
+    /** Restored from a backup that lists only chapters with reading state; the next refresh completes it. */
+    val chaptersIncomplete: Boolean = false,
 ) {
     /** Effective novel metadata with user overrides winning over source fields. */
     fun effectiveNovel(): Novel = novel.copy(
@@ -127,7 +129,8 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
     }
 
     /** Writes metadata and the chapter list; callers hold a transaction. */
-    private fun storeBook(key: NovelKey, old: SavedBook?, novel: Novel, chapters: List<Chapter>, lastUpdated: Long) {
+    private fun storeBook(key: NovelKey, old: SavedBook?, novel: Novel, chapters: List<Chapter>, lastUpdated: Long,
+        chaptersIncomplete: Boolean = false) {
         val metadata = SavedBook(
             key = key,
             novel = novel,
@@ -143,6 +146,7 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
             readerTextAlign = old?.readerTextAlign ?: ReaderTextAlign.AUTO,
             chapterSortOrder = old?.chapterSortOrder ?: ChapterSort.NUMBER_ASC,
             overrides = old?.overrides ?: NovelOverrides(),
+            chaptersIncomplete = chaptersIncomplete,
         )
         db.execute("INSERT INTO books VALUES(?,?,?) ON CONFLICT(source_id,novel_url) DO UPDATE SET metadata=excluded.metadata",
             key.sourceId, key.url, encodeBook(metadata).apply { remove("downloaded") }.toString())
@@ -184,9 +188,14 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
                 if (message != null && current.favorite) putIssue(key, title, UpdateIssueSeverity.WARNING, message, now)
                 else db.execute("DELETE FROM update_issues WHERE source_id=? AND novel_url=?", key.sourceId, key.url)
             }
-            when (val plan = planChapterRefresh(current.chapters, unique)) {
+            // A list restored from a backup holds only read chapters; completing it is not news.
+            // The truncation guard still runs first, so a partial fetch cannot drop restored read state.
+            val plan = planChapterRefresh(current.chapters, unique).let {
+                if (current.chaptersIncomplete && it is ChapterRefreshPlan.Apply) ChapterRefreshPlan.Apply(emptyList()) else it
+            }
+            when (plan) {
                 is ChapterRefreshPlan.Keep -> {
-                    storeBook(key, current, merged, current.chapters, current.lastUpdated)
+                    storeBook(key, current, merged, current.chapters, current.lastUpdated, current.chaptersIncomplete)
                     report(plan.reason)
                     RefreshOutcome.Updated(0, plan.reason)
                 }
@@ -292,6 +301,67 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
 
     @Synchronized internal fun setLastFullLibraryUpdate(at: Long) {
         write { setSetting("library_update_last_full", at.toString()) }
+    }
+
+    /** Every stored novel, in or out of the library. */
+    @Synchronized internal fun allBooks(): List<SavedBook> = refresh()
+
+    /** Returns the id of the category with [name], creating it when missing. */
+    @Synchronized internal fun ensureCategory(name: String, hidden: Boolean): Long {
+        val clean = name.trim()
+        require(clean.isNotEmpty()) { "Category name cannot be empty" }
+        categories().firstOrNull { it.name.equals(clean, ignoreCase = true) }?.let { return it.id }
+        write {
+            val nextOrder = db.query("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM categories") { it.getInt(1) }.single()
+            db.execute("INSERT INTO categories(name,sort_order,is_default,is_hidden) VALUES(?,?,0,?)",
+                clean, nextOrder, if (hidden) 1 else 0)
+        }
+        return categories().first { it.name == clean }.id
+    }
+
+    /**
+     * Merges one backed-up novel with what this computer has, following Android's restore rules:
+     * library membership and dates only grow, backup metadata and overrides win when present.
+     * Read state is applied separately through the reading-state protocol.
+     */
+    @Synchronized internal fun importBackupNovel(entry: BackupNovel, categoryId: Long?, now: Long): SavedBook {
+        val key = entry.key
+        write(invalidatesPositionEligibility = true) {
+            val old = book(key)
+            val novel = if (old == null) entry.novel else mergeNovelMetadata(old.novel, entry.novel).copy(url = key.url)
+            val known = old?.chapters?.mapTo(HashSet()) { it.url }.orEmpty()
+            val chapters = old?.chapters.orEmpty() + entry.chapters.filter { it.url !in known }
+            val favorite = entry.favorite || old?.favorite == true
+            val merged = SavedBook(
+                key = key,
+                novel = novel,
+                chapters = chapters,
+                favorite = favorite,
+                position = old?.position,
+                resumeChapterUrl = old?.resumeChapterUrl,
+                categoryId = categoryId ?: old?.categoryId,
+                lastReadAt = maxOf(entry.lastReadAt, old?.lastReadAt ?: 0L),
+                lastUpdated = maxOf(entry.lastUpdated, old?.lastUpdated ?: 0L),
+                addedAt = old?.addedAt?.takeIf { it > 0 } ?: if (favorite) now else 0L,
+                userRating = entry.userRating ?: old?.userRating,
+                readerTextAlign = entry.readerTextAlign.takeIf { it != ReaderTextAlign.AUTO }
+                    ?: old?.readerTextAlign ?: ReaderTextAlign.AUTO,
+                chapterSortOrder = entry.chapterSortOrder,
+                overrides = NovelOverrides(
+                    title = entry.overrides.title ?: old?.overrides?.title,
+                    author = entry.overrides.author ?: old?.overrides?.author,
+                    description = entry.overrides.description ?: old?.overrides?.description,
+                    status = entry.overrides.status ?: old?.overrides?.status,
+                    genres = entry.overrides.genres ?: old?.overrides?.genres,
+                    customCoverUrl = entry.overrides.customCoverUrl ?: old?.overrides?.customCoverUrl,
+                ),
+                // A novel this computer already fetched keeps its full list.
+                chaptersIncomplete = old == null || old.chapters.isEmpty() || old.chaptersIncomplete,
+            )
+            db.execute("INSERT INTO books VALUES(?,?,?) ON CONFLICT(source_id,novel_url) DO UPDATE SET metadata=excluded.metadata",
+                key.sourceId, key.url, encodeBook(merged).apply { remove("downloaded") }.toString())
+        }
+        return book(key)!!
     }
 
     @Synchronized fun favorite(key: NovelKey, value: Boolean): SavedBook = updateMembership(key, value) ?: error("Novel is no longer stored")

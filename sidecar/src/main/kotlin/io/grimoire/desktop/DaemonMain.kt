@@ -130,6 +130,8 @@ fun main(args: Array<String>) {
 private fun dispatchMethod(method: String, params: JSONObject, model: ReaderModel, scope: CoroutineScope) {
     when (method) {
         "showLibrary" -> model.showLibrary()
+        "createBackup" -> model.createBackup(Paths.get(params.getString("path")))
+        "restoreBackup" -> model.restoreBackup(Paths.get(params.getString("path")))
         "showUpdates" -> model.showUpdates()
         "updateLibrary" -> model.updateLibrary(
             if (params.has("categoryId") && !params.isNull("categoryId")) params.getLong("categoryId") else null,
@@ -350,6 +352,7 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
     .put("browseHasMore", browseHasMore)
     .put("extensionNotice", extensionNotice ?: JSONObject.NULL)
     .put("localExtension", localExtension ?: JSONObject.NULL)
+    .put("backupNotice", backupNotice ?: JSONObject.NULL)
     .put("positionNotice", positionNotice ?: JSONObject.NULL)
     .put("sources", JSONArray(sources.map { s ->
         JSONObject().put("sourceId", s.sourceId.toString()).put("name", s.name).put("lang", s.lang)
@@ -445,6 +448,7 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
             .put("cancelled", s.cancelled)
             .put("failed", s.failed)
             .put("categoryId", s.categoryId ?: JSONObject.NULL)
+            .put("targeted", s.targeted)
     } ?: JSONObject.NULL)
     .put("libraryUpdateSettings", JSONObject()
         .put("updateOnLaunch", libraryUpdateSettings.updateOnLaunch)

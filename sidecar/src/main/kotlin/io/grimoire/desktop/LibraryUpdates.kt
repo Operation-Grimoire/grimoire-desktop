@@ -91,10 +91,13 @@ data class LibraryUpdateSummary(
     val failed: Boolean = false,
     /** Null for a whole-library run. */
     val categoryId: Long? = null,
+    /** Covered only chosen novels, such as those restored from a backup. */
+    val targeted: Boolean = false,
 ) {
     fun encode(): String = JSONObject().put("finishedAt", finishedAt).put("checked", checked)
         .put("newChapters", newChapters).put("warnings", warnings).put("errors", errors)
-        .put("cancelled", cancelled).put("failed", failed).put("categoryId", categoryId ?: JSONObject.NULL).toString()
+        .put("cancelled", cancelled).put("failed", failed).put("categoryId", categoryId ?: JSONObject.NULL)
+        .put("targeted", targeted).toString()
 
     companion object {
         fun decode(text: String?): LibraryUpdateSummary? = text?.let {
@@ -102,7 +105,8 @@ data class LibraryUpdateSummary(
                 val r = JSONObject(it)
                 LibraryUpdateSummary(r.getLong("finishedAt"), r.getInt("checked"), r.getInt("newChapters"),
                     r.getInt("warnings"), r.getInt("errors"), r.optBoolean("cancelled", false),
-                    r.optBoolean("failed", false), if (r.isNull("categoryId")) null else r.getLong("categoryId"))
+                    r.optBoolean("failed", false), if (r.isNull("categoryId")) null else r.getLong("categoryId"),
+                    r.optBoolean("targeted", false))
             }.getOrNull()
         }
     }
@@ -223,6 +227,8 @@ internal class LibraryUpdater(
         concurrency: Int,
         onProgress: (done: Int, total: Int, title: String?) -> Unit,
         onNovelDone: (NovelKey, RefreshOutcome) -> Unit,
+        /** False for chosen novels outside the library, such as restored reading history. */
+        requireFavorite: Boolean = true,
     ): LibraryUpdateSummary = runLock.withLock {
         val total = targets.size
         val queue = ArrayDeque(targets)
@@ -240,7 +246,7 @@ internal class LibraryUpdater(
                         val book = queueLock.withLock { queue.removeFirstOrNull() } ?: break
                         val outcome = try {
                             onProgress(done.get(), total, book.effectiveNovel().title)
-                            gates.getValue(book.key.sourceId).run { refresh(book, requireFavorite = true) }
+                            gates.getValue(book.key.sourceId).run { refresh(book, requireFavorite) }
                                 ?: pausedOutcome(book)
                         } catch (cancelled: CancellationException) {
                             throw cancelled

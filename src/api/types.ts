@@ -207,6 +207,8 @@ export interface LibraryUpdateSummary {
   failed: boolean;
   /** Null for a whole-library run. */
   categoryId: number | null;
+  /** Covered only chosen novels, such as those restored from a backup. */
+  targeted: boolean;
 }
 
 export interface LibraryUpdateSettings {
@@ -252,6 +254,8 @@ export interface ReaderState {
   browseHasMore: boolean;
   extensionNotice: string | null;
   localExtension: string | null;
+  /** Progress or result of the last backup or restore. */
+  backupNotice: string | null;
   positionNotice: string | null;
   sources: BrowseSource[];
   categories: DesktopCategory[];

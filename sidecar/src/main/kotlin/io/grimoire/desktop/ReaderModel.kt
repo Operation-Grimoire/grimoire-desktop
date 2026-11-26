@@ -66,6 +66,8 @@ data class ReaderState(
     val pendingRepository: PendingRepository? = null,
     val extensionNotice: String? = null,
     val localExtension: String? = null,
+    /** Progress or result of the last backup or restore. */
+    val backupNotice: String? = null,
     val appearance: DesktopAppearance = DesktopAppearance(),
     val readerSettings: DesktopReaderSettings = DesktopReaderSettings(),
     val categories: List<DesktopCategory> = emptyList(),
@@ -125,6 +127,8 @@ class ReaderModel(
     private var libraryUpdateJob: Job? = null
     private val publishLock = Any()
     @Volatile private var lastScheduledAttempt = 0L
+    /** Outside-library novels already retried after a library update this session. */
+    private val leftoverAttempts: MutableSet<NovelKey> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     // The history worker is drained separately from navigation jobs before closing the store.
     private val historyScope = CoroutineScope(SupervisorJob() + operationDispatcher)
     private val historyWrites = OpenedHistoryWrites(historyScope, DesktopOpenedHistoryDao(library)) { failure ->
@@ -637,11 +641,30 @@ class ReaderModel(
         }
     }
 
+    /**
+     * Refreshes [keys] only, regardless of the skip-completed setting; never moves the schedule.
+     * Waits for a running update, whose targets were chosen before these novels existed.
+     * Returns false when nothing will run (offline, closing or no keys).
+     */
+    private fun updateBooks(keys: Set<NovelKey>): Boolean {
+        synchronized(operationLock) {
+            if (closing.get() || keys.isEmpty() || state.value.offline) return false
+            val running = libraryUpdateJob?.takeIf { it.isActive }
+            if (running != null) {
+                updaterScope.launch { running.join(); updateBooks(keys) }
+                return true
+            }
+            mutable.update { it.copy(libraryUpdate = LibraryUpdateProgress(0, 0, null, null)) }
+            libraryUpdateJob = updaterScope.launch { runLibraryUpdate(null, keys) }
+            return true
+        }
+    }
+
     fun cancelLibraryUpdate() {
         libraryUpdateJob?.cancel()
     }
 
-    private suspend fun runLibraryUpdate(categoryId: Long?) {
+    private suspend fun runLibraryUpdate(categoryId: Long?, only: Set<NovelKey>? = null) {
         val checked = AtomicInteger()
         val found = AtomicInteger()
         val warnings = AtomicInteger()
@@ -651,13 +674,16 @@ class ReaderModel(
         var failed = false
         try {
             val settings = state.value.libraryUpdateSettings
-            val targets = library.saved().filter { book ->
+            // Chosen novels may be outside the library (restored reading history).
+            val targets = if (only != null) library.allBooks().filter { it.key in only }
+            else library.saved().filter { book ->
                 (categoryId == null || book.categoryId == categoryId) &&
                     !(settings.skipCompleted && book.effectiveNovel().status == NovelStatus.COMPLETED)
             }
             updater.run(
                 targets,
                 settings.concurrency,
+                requireFavorite = only == null,
                 onProgress = { done, total, title ->
                     mutable.update { st ->
                         val p = st.libraryUpdate ?: return@update st
@@ -691,14 +717,27 @@ class ReaderModel(
             mutable.update { it.copy(error = "Library update failed: ${failure.message ?: failure.javaClass.simpleName}") }
         } finally {
             val summary = LibraryUpdateSummary(System.currentTimeMillis(), checked.get(), found.get(), warnings.get(),
-                errors.get(), cancelled = !finished && !failed, failed = failed, categoryId = categoryId)
+                errors.get(), cancelled = !finished && !failed, failed = failed, categoryId = categoryId,
+                targeted = only != null)
+            // A targeted run (restored novels) is housekeeping; it keeps the library run's summary.
             if (!closing.get()) withContext(NonCancellable) {
-                runCatching { library.setLastLibraryUpdate(summary) }
+                if (only == null) runCatching { library.setLastLibraryUpdate(summary) }
                 // Only a completed whole-library run moves the schedule.
-                if (finished && categoryId == null) runCatching { library.setLastFullLibraryUpdate(summary.finishedAt) }
+                if (finished && categoryId == null && only == null) runCatching { library.setLastFullLibraryUpdate(summary.finishedAt) }
                 runCatching { publishUpdateResults(null) }
             }
-            mutable.update { it.copy(libraryUpdate = null, lastLibraryUpdate = summary) }
+            mutable.update { st -> st.copy(libraryUpdate = null, lastLibraryUpdate = if (only == null) summary else st.lastLibraryUpdate) }
+            // Restored reading history outside the library is not a library target. After a whole-library
+            // run, finish its lists once per session, and only where the source is installed.
+            if (finished && categoryId == null && only == null && !closing.get()) {
+                val leftover = runCatching {
+                    library.allBooks().filter {
+                        !it.favorite && it.chaptersIncomplete && it.key !in leftoverAttempts && extensionFor(it.key.sourceId) != null
+                    }.mapTo(HashSet()) { it.key }
+                }.getOrDefault(emptySet())
+                leftoverAttempts += leftover
+                if (leftover.isNotEmpty()) updaterScope.launch { updateBooks(leftover) }
+            }
         }
     }
 
@@ -822,6 +861,97 @@ class ReaderModel(
         val chapter = book.chapters.find { it.url == entry.key.url && !it.locked }
             ?: error("This chapter is locked or unavailable")
         readChapter(book, chapter, View.UPDATES)
+    }
+
+    /** Writes an Android-compatible backup of the library and reading state to [path]. */
+    fun createBackup(path: Path) = operate {
+        mutable.update { it.copy(backupNotice = "Writing ${path.fileName}…") }
+        reportBackupFailure("Backup failed") { writeLibraryBackup(path) }
+    }
+
+    private fun writeLibraryBackup(path: Path) {
+        val books = library.allBooks()
+        writeBackup(path, books, library.categories(), extensions?.repositoryViews().orEmpty(),
+            System.getProperty("grimoire.version") ?: "dev", System.currentTimeMillis())
+        val count = books.count { it.favorite || it.readChapters.isNotEmpty() }
+        mutable.update { it.copy(backupNotice = "Backed up ${plural(count, "novel")} to ${path.fileName}") }
+    }
+
+    /**
+     * Restores a desktop or Android backup into this library. Nothing is removed; read chapters
+     * are marked through the reading-state protocol. Restored novels whose chapter lists are
+     * partial are refreshed afterwards when online.
+     */
+    fun restoreBackup(path: Path) = operate {
+        mutable.update { it.copy(backupNotice = "Reading ${path.fileName}…") }
+        reportBackupFailure("Restore failed") { restoreLibraryBackup(path) }
+    }
+
+    /** A failure replaces the progress notice, so it never looks like work is still running. */
+    private suspend fun reportBackupFailure(prefix: String, action: suspend () -> Unit) {
+        try {
+            action()
+        } catch (cancelled: CancellationException) {
+            mutable.update { it.copy(backupNotice = "$prefix: cancelled") }
+            throw cancelled
+        } catch (failure: Exception) {
+            mutable.update { it.copy(backupNotice = "$prefix: ${failure.message ?: failure.javaClass.simpleName}") }
+            throw failure
+        }
+    }
+
+    private suspend fun restoreLibraryBackup(path: Path) {
+        val contents = readBackup(path)
+        val now = System.currentTimeMillis()
+        val defaults = contents.categories.filter { it.isDefault }.mapTo(HashSet()) { it.name }
+        val categoryIds = HashMap<String, Long>()
+        fun categoryFor(name: String?, hidden: Boolean = false): Long? {
+            if (name.isNullOrBlank() || name in defaults) return null
+            return categoryIds.getOrPut(name) { library.ensureCategory(name, hidden) }
+        }
+        contents.categories.sortedBy { it.order }.forEach { categoryFor(it.name, it.isHidden) }
+
+        val existing = library.allBooks().mapTo(HashSet()) { it.key }
+        var restored = 0
+        var added = 0
+        var marked = 0
+        var localBooks = 0
+        val missingSources = HashSet<Long>()
+        for (entry in contents.novels) {
+            // Android's imported EPUB/TXT books carry no text in a backup.
+            if (entry.key.sourceId == ANDROID_LOCAL_SOURCE_ID) { localBooks++; continue }
+            val stored = library.importBackupNovel(entry, categoryFor(entry.categoryName), now)
+            if (entry.key !in existing) added++
+            if (extensionFor(entry.key.sourceId) == null) missingSources += entry.key.sourceId
+            val at = entry.lastReadAt.takeIf { it > 0 } ?: now
+            for (url in entry.readChapters) {
+                if (url in stored.readChapters) continue
+                val input = ReadingCompletionInput.MarkRead(ChapterKey(entry.key, url), at)
+                readingStates.prepareExplicit(input)?.let { readingStates.submit(it); marked++ }
+            }
+            restored++
+            if (restored % 10 == 0) mutable.update { it.copy(backupNotice = "Restoring… $restored of ${contents.novels.size}") }
+        }
+        publishUpdateResults(null)
+        mutable.update { it.copy(categories = library.categories()) }
+
+        // Includes restored reading history outside the library.
+        val incomplete = library.allBooks().filter { it.chaptersIncomplete }.mapTo(HashSet()) { it.key }
+        val notes = buildList {
+            add("Restored ${plural(restored, "novel")} ($added new), ${plural(marked, "read chapter")}")
+            if (missingSources.isNotEmpty()) add("${plural(missingSources.size, "source")} not installed — install them in Extensions to read and update those novels")
+            if (localBooks > 0) add("${plural(localBooks, "imported book")} skipped (book files are not in backups)")
+            val repos = contents.repositories.map { it.indexUrl }.toSet() -
+                extensions?.repositoryViews().orEmpty().map { it.indexUrl }.toSet()
+            if (repos.isNotEmpty()) add("${plural(repos.size, "repository")} not added — desktop needs each repository's signing key: ${repos.joinToString()}")
+        }
+        val fetching = updateBooks(incomplete)
+        val lists = when {
+            incomplete.isEmpty() -> null
+            fetching -> "Fetching full chapter lists for ${plural(incomplete.size, "novel")}…"
+            else -> "Go online and update the library to fetch full chapter lists"
+        }
+        mutable.update { it.copy(backupNotice = (notes + listOfNotNull(lists)).joinToString(".\n") + ".") }
     }
 
     /** Short store writes that must not wait behind, or block, a running operation. */
@@ -1187,6 +1317,14 @@ class ReaderModel(
 }
 
 private const val LAUNCH_UPDATE_DELAY_MS = 8_000L
+
+/** Android's id for imported EPUB/TXT books. */
+private const val ANDROID_LOCAL_SOURCE_ID = 0L
+
+private fun plural(count: Int, noun: String): String {
+    val word = if (count == 1) noun else if (noun.endsWith("y")) noun.dropLast(1) + "ies" else noun + "s"
+    return "%,d %s".format(count, word)
+}
 private const val SCHEDULER_TICK_MS = 60_000L
 private const val UPDATER_SHUTDOWN_MS = 3_000L
 

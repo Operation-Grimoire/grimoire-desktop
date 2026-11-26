@@ -4,6 +4,7 @@ import type { ColorTheme, LibraryUpdateSettings, ReaderState, ThemeMode } from "
 import { rpc } from "../api/client";
 import { HeaderBar } from "../components/HeaderBar";
 import { ToggleSwitch } from "./HistoryView";
+import { BackupSection } from "../components/BackupSection";
 
 const PALETTES: { id: ColorTheme; label: string; dots: [string, string, string] }[] = [
   { id: "DEFAULT", label: "Default", dots: ["#a78bfa", "#c4b5fd", "#f472b6"] },
@@ -125,6 +126,8 @@ export function SettingsView({ state }: { state: ReaderState }) {
           {/* Library updates */}
           <LibraryUpdatesSection state={state} />
 
+          <BackupSection state={state} />
+
           {/* Network */}
           <section className="border-t border-[var(--border-hairline)] pt-6">
             <h2 className="text-[11.5px] font-semibold uppercase tracking-wider text-[var(--accent)]">
@@ -229,7 +232,12 @@ function LibraryUpdatesSection({ state }: { state: ReaderState }) {
       {state.lastLibraryUpdate && (
         <div className="mt-2.5 flex items-center gap-1.5 text-[12px] text-[var(--text-muted)]">
           <RefreshCw className="h-3 w-3" />
-          Last update{state.lastLibraryUpdate.categoryId != null ? " (one category)" : ""}{" "}
+          Last update
+          {state.lastLibraryUpdate.targeted
+            ? " (restored novels)"
+            : state.lastLibraryUpdate.categoryId != null
+              ? " (one category)"
+              : ""}{" "}
           {new Date(state.lastLibraryUpdate.finishedAt).toLocaleString()} ·{" "}
           {state.lastLibraryUpdate.newChapters} new
           {state.lastLibraryUpdate.errors > 0 ? ` · ${state.lastLibraryUpdate.errors} failed` : ""}
