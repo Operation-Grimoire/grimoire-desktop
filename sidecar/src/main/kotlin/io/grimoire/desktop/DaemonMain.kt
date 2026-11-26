@@ -16,6 +16,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.io.FileDescriptor
+import java.io.FileOutputStream
 import java.io.PrintStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -40,7 +42,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 fun main(args: Array<String>) {
     // Reserve stdout exclusively for framed NDJSON; redirect any library/extension println to stderr.
-    val rpcOut = System.out
+    // The bridge reads UTF-8. The default stream uses the Windows code page and turns CJK text into '?'.
+    val rpcOut = PrintStream(FileOutputStream(FileDescriptor.out), false, StandardCharsets.UTF_8)
     System.setOut(System.err)
 
     require(args.size % 2 == 0) { "Use --extension MANIFEST --data DIRECTORY" }
@@ -137,8 +140,8 @@ private fun dispatchMethod(method: String, params: JSONObject, model: ReaderMode
         "downloadUpdates" -> model.downloadUpdates(params.longs("ids"))
         "removeUpdates" -> model.removeUpdates(params.longs("ids"))
         "clearUpdates" -> model.clearUpdates()
-        "retryUpdateIssue" -> model.retryUpdateIssue(NovelKey(params.getLong("sourceId"), params.getString("novelUrl")))
-        "dismissUpdateIssue" -> model.dismissUpdateIssue(NovelKey(params.getLong("sourceId"), params.getString("novelUrl")))
+        "retryUpdateIssue" -> model.retryUpdateIssue(NovelKey(params.sourceId(), params.getString("novelUrl")))
+        "dismissUpdateIssue" -> model.dismissUpdateIssue(NovelKey(params.sourceId(), params.getString("novelUrl")))
         "clearUpdateIssues" -> model.clearUpdateIssues()
         // A partial patch, merged against the latest settings inside the model.
         "setLibraryUpdateSettings" -> model.changeLibraryUpdateSettings { current ->
@@ -187,7 +190,7 @@ private fun dispatchMethod(method: String, params: JSONObject, model: ReaderMode
         }
 
         "removeFromLibrary" -> model.removeFromLibrary(
-            NovelKey(params.getLong("sourceId"), params.getString("novelUrl")),
+            NovelKey(params.sourceId(), params.getString("novelUrl")),
         )
 
         "createCategory" -> model.createCategory(params.getString("name"))
@@ -195,27 +198,27 @@ private fun dispatchMethod(method: String, params: JSONObject, model: ReaderMode
         "deleteCategory" -> model.deleteCategory(params.getLong("id"))
 
         "setBookCategory" -> model.setBookCategory(
-            NovelKey(params.getLong("sourceId"), params.getString("novelUrl")),
+            NovelKey(params.sourceId(), params.getString("novelUrl")),
             if (params.has("categoryId") && !params.isNull("categoryId")) params.getLong("categoryId") else null,
         )
 
         "setBookRating" -> model.setBookRating(
-            NovelKey(params.getLong("sourceId"), params.getString("novelUrl")),
+            NovelKey(params.sourceId(), params.getString("novelUrl")),
             if (params.has("rating") && !params.isNull("rating")) params.getInt("rating") else null,
         )
 
         "setBookChapterSort" -> model.setBookChapterSort(
-            NovelKey(params.getLong("sourceId"), params.getString("novelUrl")),
+            NovelKey(params.sourceId(), params.getString("novelUrl")),
             ChapterSort.valueOf(params.getString("sort")),
         )
 
         "setBookTextAlign" -> model.setBookTextAlign(
-            NovelKey(params.getLong("sourceId"), params.getString("novelUrl")),
+            NovelKey(params.sourceId(), params.getString("novelUrl")),
             ReaderTextAlign.valueOf(params.getString("textAlign")),
         )
 
         "setBookOverrides" -> {
-            val key = NovelKey(params.getLong("sourceId"), params.getString("novelUrl"))
+            val key = NovelKey(params.sourceId(), params.getString("novelUrl"))
             val ov = params.optJSONObject("overrides") ?: JSONObject()
             fun optStr(k: String): String? =
                 if (ov.has(k) && !ov.isNull(k)) ov.getString(k).trim().takeIf { it.isNotEmpty() } else null
@@ -236,7 +239,7 @@ private fun dispatchMethod(method: String, params: JSONObject, model: ReaderMode
             )
         }
 
-        "selectSource" -> model.selectSource(params.getLong("sourceId"))
+        "selectSource" -> model.selectSource(params.sourceId())
         "setBrowseMode" -> model.setBrowseMode(BrowseMode.valueOf(params.getString("mode")))
         "search" -> model.search(params.getString("query"))
         "offline" -> model.offline(params.getBoolean("offline"))
@@ -274,7 +277,7 @@ private fun dispatchMethod(method: String, params: JSONObject, model: ReaderMode
         }
 
         "openSaved" -> {
-            val key = NovelKey(params.getLong("sourceId"), params.getString("novelUrl"))
+            val key = NovelKey(params.sourceId(), params.getString("novelUrl"))
             val book = model.state.value.library.firstOrNull { it.key == key }
                 ?: error("Book not found in library")
             val origin = if (params.optString("origin") == "UPDATES") View.UPDATES else View.LIBRARY
@@ -339,7 +342,7 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
     .put("error", error ?: JSONObject.NULL)
     .put("sourceName", sourceName ?: JSONObject.NULL)
     .put("historyRecording", historyRecording)
-    .put("browseSource", browseSource ?: JSONObject.NULL)
+    .put("browseSource", browseSource?.toString() ?: JSONObject.NULL)
     .put("browseMode", browseMode?.name ?: JSONObject.NULL)
     .put("browseModes", JSONArray(browseModes.map { it.name }))
     .put("browseQuery", browseQuery)
@@ -349,7 +352,7 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
     .put("localExtension", localExtension ?: JSONObject.NULL)
     .put("positionNotice", positionNotice ?: JSONObject.NULL)
     .put("sources", JSONArray(sources.map { s ->
-        JSONObject().put("sourceId", s.sourceId).put("name", s.name).put("lang", s.lang)
+        JSONObject().put("sourceId", s.sourceId.toString()).put("name", s.name).put("lang", s.lang)
     }))
     .put("library", JSONArray(library.map { it.toJson(includeChapters = false) }))
     .put("novels", JSONArray(novels.map { it.toJson() }))
@@ -369,7 +372,7 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
     .put("history", JSONArray(history.map { h ->
         JSONObject()
             .put("id", h.id)
-            .put("sourceId", h.chapter.key.novel.sourceId)
+            .put("sourceId", h.chapter.key.novel.sourceId.toString())
             .put("novelUrl", h.chapter.key.novel.url)
             .put("chapterUrl", h.chapter.key.url)
             .put("novelTitle", h.chapter.novelTitle)
@@ -417,7 +420,7 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
     .put("updates", updatesJson())
     .put("updateIssues", JSONArray(updateIssues.filter { issue -> library.any { it.key == issue.key } }.map { issue ->
         JSONObject()
-            .put("sourceId", issue.key.sourceId)
+            .put("sourceId", issue.key.sourceId.toString())
             .put("novelUrl", issue.key.url)
             .put("novelTitle", issue.novelTitle)
             .put("severity", issue.severity.name)
@@ -476,7 +479,7 @@ private fun ReaderState.updatesJson(): JSONArray {
         val novel = book.effectiveNovel()
         JSONObject()
             .put("id", entry.id)
-            .put("sourceId", entry.key.novel.sourceId)
+            .put("sourceId", entry.key.novel.sourceId.toString())
             .put("novelUrl", entry.key.novel.url)
             .put("chapterUrl", entry.key.url)
             .put("novelTitle", novel.title)
@@ -489,6 +492,15 @@ private fun ReaderState.updatesJson(): JSONArray {
             .put("read", entry.key.url in book.readChapters)
             .put("downloaded", entry.key.url in book.downloaded)
     })
+}
+
+/**
+ * Source ids are 64-bit and exceed JavaScript's exact integer range, so they cross the
+ * bridge as strings. A plain number is still accepted for small ids.
+ */
+private fun JSONObject.sourceId(): Long = when (val value = get("sourceId")) {
+    is Number -> value.toLong()
+    else -> value.toString().toLong()
 }
 
 private fun JSONObject.longs(name: String): List<Long> =
@@ -527,7 +539,7 @@ private fun SavedBook.toJson(includeChapters: Boolean): JSONObject {
         .put("genres", overrides.genres?.let { JSONArray(it) } ?: JSONObject.NULL)
         .put("customCoverUrl", overrides.customCoverUrl ?: JSONObject.NULL)
     val obj = JSONObject()
-        .put("sourceId", key.sourceId)
+        .put("sourceId", key.sourceId.toString())
         .put("novelUrl", key.url)
         .put("novel", effective.toJson())
         .put("sourceNovel", novel.toJson())

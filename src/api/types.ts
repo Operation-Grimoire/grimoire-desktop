@@ -32,7 +32,8 @@ export type ExtensionStatus =
   | "UNAVAILABLE";
 
 export interface BrowseSource {
-  sourceId: number;
+  /** 64-bit id; a string because it exceeds JavaScript's exact integer range. */
+  sourceId: string;
   name: string;
   lang: string;
 }
@@ -82,7 +83,8 @@ export interface ReadPosition {
 }
 
 export interface SavedBook {
-  sourceId: number;
+  /** 64-bit id; a string because it exceeds JavaScript's exact integer range. */
+  sourceId: string;
   novelUrl: string;
   novel: Novel;
   sourceNovel: Novel;
@@ -118,7 +120,8 @@ export interface RestoreViewport {
 
 export interface HistoryEntry {
   id: number;
-  sourceId: number;
+  /** 64-bit id; a string because it exceeds JavaScript's exact integer range. */
+  sourceId: string;
   novelUrl: string;
   chapterUrl: string;
   novelTitle: string;
@@ -158,7 +161,8 @@ export interface PendingRepository {
 
 export interface UpdateEntry {
   id: number;
-  sourceId: number;
+  /** 64-bit id; a string because it exceeds JavaScript's exact integer range. */
+  sourceId: string;
   novelUrl: string;
   chapterUrl: string;
   novelTitle: string;
@@ -176,7 +180,8 @@ export interface UpdateEntry {
 export type UpdateIssueSeverity = "WARNING" | "ERROR";
 
 export interface UpdateIssue {
-  sourceId: number;
+  /** 64-bit id; a string because it exceeds JavaScript's exact integer range. */
+  sourceId: string;
   novelUrl: string;
   novelTitle: string;
   severity: UpdateIssueSeverity;
@@ -239,7 +244,7 @@ export interface ReaderState {
   error: string | null;
   sourceName: string | null;
   historyRecording: boolean;
-  browseSource: number | null;
+  browseSource: string | null;
   browseMode: BrowseMode | null;
   browseModes: BrowseMode[];
   browseQuery: string;

@@ -26,7 +26,7 @@ type Tab = "UPDATES" | "ISSUES";
 
 interface NovelGroup {
   key: string;
-  sourceId: number;
+  sourceId: string;
   novelUrl: string;
   novelTitle: string;
   thumbnailUrl: string | null;

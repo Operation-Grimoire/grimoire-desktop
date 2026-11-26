@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowLeft,
   Bookmark,
@@ -21,6 +22,7 @@ import {
 } from "lucide-react";
 import type { Chapter, ChapterSort, ReaderState } from "../api/types";
 import { coverUrl, rpc } from "../api/client";
+import { renderRichText } from "../utils/safeHtml";
 import { HeaderBar } from "../components/HeaderBar";
 import { SearchPill } from "../components/SearchPill";
 
@@ -67,6 +69,11 @@ export function BookDetailView({
   }, []);
 
   const orderedChapters = useMemo(() => book?.chapters ?? [], [book?.chapters]);
+  // Reading-order position by url; a per-row findIndex was quadratic on long novels.
+  const readingIndex = useMemo(
+    () => new Map(orderedChapters.map((c, i) => [c.url, i] as const)),
+    [orderedChapters],
+  );
 
   const displayedChapters = useMemo(() => {
     const sort = book?.chapterSortOrder ?? "NUMBER_ASC";
@@ -89,8 +96,33 @@ export function BookDetailView({
     return q ? list.filter((c) => c.name.toLowerCase().includes(q)) : list;
   }, [orderedChapters, book?.chapterSortOrder, chapterQuery]);
 
+  // Only the rows on screen are mounted; thousands of chapters stay cheap to open and update.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [listOffset, setListOffset] = useState(0);
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const scroller = scrollRef.current;
+    if (!list || !scroller) return;
+    // Distance from the top of the scroll content, independent of positioned wrappers.
+    const offset = Math.round(
+      list.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop,
+    );
+    if (offset !== listOffset) setListOffset(offset);
+  });
+  const virtualizer = useVirtualizer({
+    count: displayedChapters.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => CHAPTER_ROW_HEIGHT,
+    overscan: 12,
+    scrollMargin: listOffset,
+    getItemKey: (index) => displayedChapters[index]?.url ?? index,
+  });
+
   if (!book) return null;
 
+  // Sources often repeat genres, sometimes with different casing.
+  const genres = uniqueGenres(book.novel.genres);
   const sourceInfo = state.sources.find((s) => s.sourceId === book.sourceId);
   const sourceName = sourceInfo?.name ?? "Source uninstalled";
   const cover = coverUrl(coverBaseUrl, book.novel.thumbnailUrl);
@@ -204,7 +236,8 @@ export function BookDetailView({
       />
 
       <div
-        className="flex-1 overflow-y-auto animate-view-enter"
+        ref={scrollRef}
+        className="relative flex-1 overflow-y-auto animate-view-enter"
         onClick={() => {
           if (showRatingPicker) setShowRatingPicker(false);
           if (showCategoryPicker) setShowCategoryPicker(false);
@@ -248,9 +281,9 @@ export function BookDetailView({
                   </span>
                 </div>
 
-                {book.novel.genres.length > 0 && (
+                {genres.length > 0 && (
                   <div className="mt-3 flex flex-wrap gap-1.5">
-                    {book.novel.genres.slice(0, 12).map((genre) => (
+                    {genres.slice(0, 12).map((genre) => (
                       <span
                         key={genre}
                         className="rounded-md bg-[var(--row-hover)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)]"
@@ -418,13 +451,13 @@ export function BookDetailView({
           {/* Description */}
           {book.novel.description && (
             <div className="mt-6 rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-surface)]/55 p-4">
-              <p
+              <div
                 className={`whitespace-pre-line text-[13.5px] leading-relaxed text-[var(--text-secondary)] ${
                   expandedDesc ? "" : "line-clamp-4"
                 }`}
               >
-                {book.novel.description}
-              </p>
+                {renderRichText(book.novel.description)}
+              </div>
               {book.novel.description.length > 260 && (
                 <button
                   type="button"
@@ -559,23 +592,26 @@ export function BookDetailView({
               </div>
             </div>
 
-            <div className="divide-y divide-[var(--border-hairline)]">
-              {displayedChapters.map((ch) => {
+            <div ref={listRef} className="relative" style={{ height: virtualizer.getTotalSize() }}>
+              {virtualizer.getVirtualItems().map((item) => {
+                const ch = displayedChapters[item.index];
                 const readable = !ch.locked && (!state.offline || Boolean(ch.downloaded));
                 const isResume = ch.url === book.resumeChapterUrl;
-                const readingIdx = orderedChapters.findIndex((c) => c.url === ch.url);
-                const dateStr =
-                  ch.uploadDate > 0
-                    ? new Date(ch.uploadDate).toLocaleDateString(undefined, {
-                        month: "short",
-                        day: "numeric",
-                        year: "numeric",
-                      })
-                    : null;
+                const readingIdx = readingIndex.get(ch.url) ?? -1;
+                const dateStr = ch.uploadDate > 0 ? CHAPTER_DATE.format(ch.uploadDate) : null;
 
                 return (
                   <div
-                    key={ch.url}
+                    key={item.key}
+                    data-index={item.index}
+                    ref={virtualizer.measureElement}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${item.start - virtualizer.options.scrollMargin}px)`,
+                    }}
                     onContextMenu={(e) => {
                       if (ch.locked) return;
                       e.preventDefault();
@@ -586,7 +622,7 @@ export function BookDetailView({
                         indexInReadingOrder: readingIdx,
                       });
                     }}
-                    className={`group flex items-center gap-2.5 px-2 py-2 transition-colors ${
+                    className={`group flex items-center gap-2.5 border-b border-[var(--border-hairline)] px-2 py-2 transition-colors ${
                       readable ? "hover:bg-[var(--row-hover)]" : "opacity-45"
                     }`}
                   >
@@ -847,3 +883,21 @@ export function BookDetailView({
     </div>
   );
 }
+
+function uniqueGenres(genres: string[]): string[] {
+  const seen = new Set<string>();
+  return genres
+    .map((g) => g.trim())
+    .filter((g) => {
+      const key = g.toLowerCase();
+      if (!g || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+/** Estimated chapter row height; rows are measured after mount, so this only seeds the layout. */
+const CHAPTER_ROW_HEIGHT = 53;
+
+// One formatter for every row; constructing Intl formatters per row is slow.
+const CHAPTER_DATE = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" });
