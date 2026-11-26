@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import type { Chapter, ChapterSort, ReaderState } from "../api/types";
 import { coverUrl, rpc } from "../api/client";
-import { renderSafeHtml } from "../utils/safeHtml";
+import { renderRichText } from "../utils/safeHtml";
 import { HeaderBar } from "../components/HeaderBar";
 import { SearchPill } from "../components/SearchPill";
 
@@ -456,7 +456,7 @@ export function BookDetailView({
                   expandedDesc ? "" : "line-clamp-4"
                 }`}
               >
-                {renderSafeHtml(book.novel.description)}
+                {renderRichText(book.novel.description)}
               </div>
               {book.novel.description.length > 260 && (
                 <button

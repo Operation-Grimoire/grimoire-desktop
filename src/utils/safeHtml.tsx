@@ -5,6 +5,19 @@ import React from "react";
  * <s>, <del>, <sub>, <sup>, <br>, <code>, <a href="https://...">) into React elements without
  * using dangerouslySetInnerHTML.
  */
+const KNOWN_TAG =
+  /<\/?(?:br|p|div|span|i|em|b|strong|u|s|del|strike|sub|sup|code|blockquote|a)(?:\s[^<>]*)?\/?>/i;
+
+/** True when the text carries markup we render; plain text with stray "<" or "&" is left alone. */
+export function looksLikeHtml(text: string): boolean {
+  return KNOWN_TAG.test(text);
+}
+
+/** Renders markup when present, otherwise returns the text verbatim. */
+export function renderRichText(text: string): React.ReactNode {
+  return looksLikeHtml(text) ? renderSafeHtml(text) : text;
+}
+
 export function renderSafeHtml(html: string): React.ReactNode {
   const parser = new DOMParser();
   const doc = parser.parseFromString(`<div>${html}</div>`, "text/html");
