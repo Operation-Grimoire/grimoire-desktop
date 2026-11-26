@@ -127,6 +127,8 @@ class ReaderModel(
     private var libraryUpdateJob: Job? = null
     private val publishLock = Any()
     @Volatile private var lastScheduledAttempt = 0L
+    /** Outside-library novels already retried after a library update this session. */
+    private val leftoverAttempts: MutableSet<NovelKey> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     // The history worker is drained separately from navigation jobs before closing the store.
     private val historyScope = CoroutineScope(SupervisorJob() + operationDispatcher)
     private val historyWrites = OpenedHistoryWrites(historyScope, DesktopOpenedHistoryDao(library)) { failure ->
@@ -717,18 +719,23 @@ class ReaderModel(
             val summary = LibraryUpdateSummary(System.currentTimeMillis(), checked.get(), found.get(), warnings.get(),
                 errors.get(), cancelled = !finished && !failed, failed = failed, categoryId = categoryId,
                 targeted = only != null)
+            // A targeted run (restored novels) is housekeeping; it keeps the library run's summary.
             if (!closing.get()) withContext(NonCancellable) {
-                runCatching { library.setLastLibraryUpdate(summary) }
+                if (only == null) runCatching { library.setLastLibraryUpdate(summary) }
                 // Only a completed whole-library run moves the schedule.
                 if (finished && categoryId == null && only == null) runCatching { library.setLastFullLibraryUpdate(summary.finishedAt) }
                 runCatching { publishUpdateResults(null) }
             }
-            mutable.update { it.copy(libraryUpdate = null, lastLibraryUpdate = summary) }
-            // Restored reading history outside the library is not a library target; finish its lists next.
-            if (finished && only == null && !closing.get()) {
+            mutable.update { st -> st.copy(libraryUpdate = null, lastLibraryUpdate = if (only == null) summary else st.lastLibraryUpdate) }
+            // Restored reading history outside the library is not a library target. After a whole-library
+            // run, finish its lists once per session, and only where the source is installed.
+            if (finished && categoryId == null && only == null && !closing.get()) {
                 val leftover = runCatching {
-                    library.allBooks().filter { !it.favorite && it.chaptersIncomplete }.mapTo(HashSet()) { it.key }
+                    library.allBooks().filter {
+                        !it.favorite && it.chaptersIncomplete && it.key !in leftoverAttempts && extensionFor(it.key.sourceId) != null
+                    }.mapTo(HashSet()) { it.key }
                 }.getOrDefault(emptySet())
+                leftoverAttempts += leftover
                 if (leftover.isNotEmpty()) updaterScope.launch { updateBooks(leftover) }
             }
         }
