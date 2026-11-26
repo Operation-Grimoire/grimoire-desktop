@@ -140,15 +140,15 @@ private fun dispatchMethod(method: String, params: JSONObject, model: ReaderMode
         "retryUpdateIssue" -> model.retryUpdateIssue(NovelKey(params.getLong("sourceId"), params.getString("novelUrl")))
         "dismissUpdateIssue" -> model.dismissUpdateIssue(NovelKey(params.getLong("sourceId"), params.getString("novelUrl")))
         "clearUpdateIssues" -> model.clearUpdateIssues()
-        "setLibraryUpdateSettings" -> {
-            val current = model.state.value.libraryUpdateSettings
-            model.setLibraryUpdateSettings(current.copy(
+        // A partial patch, merged against the latest settings inside the model.
+        "setLibraryUpdateSettings" -> model.changeLibraryUpdateSettings { current ->
+            current.copy(
                 updateOnLaunch = params.optBoolean("updateOnLaunch", current.updateOnLaunch),
                 autoUpdate = params.optBoolean("autoUpdate", current.autoUpdate),
                 intervalHours = params.optInt("intervalHours", current.intervalHours),
                 concurrency = params.optInt("concurrency", current.concurrency),
                 skipCompleted = params.optBoolean("skipCompleted", current.skipCompleted),
-            ))
+            )
         }
         "showBrowse" -> model.showBrowse()
         "showHistory" -> model.showHistory()

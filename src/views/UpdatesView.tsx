@@ -267,7 +267,7 @@ function NovelBlock({
             </div>
           </div>
         </button>
-        <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/header:opacity-100">
+        <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/header:opacity-100 group-focus-within/header:opacity-100">
           {downloadable.length > 1 && (
             <RowAction title="Download all" disabled={busy} onClick={() => rpc("downloadUpdates", { ids: downloadable })}>
               <Download className="h-3.5 w-3.5" />
@@ -312,10 +312,10 @@ function ChapterRow({ entry, busy }: { entry: UpdateEntry; busy: boolean }) {
         {entry.unlocked && !entry.locked && <Badge icon={LockOpen}>Unlocked</Badge>}
         {entry.downloaded && <Badge icon={Download}>Saved</Badge>}
       </button>
-      <span className="shrink-0 text-[11.5px] tabular-nums text-[var(--text-muted)] group-hover:hidden">
+      <span className="shrink-0 text-[11.5px] tabular-nums text-[var(--text-muted)]">
         {new Date(entry.foundAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
       </span>
-      <div className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
         {!entry.locked && !entry.downloaded && (
           <RowAction title="Download" disabled={busy} onClick={() => rpc("downloadUpdates", { ids: [entry.id] })}>
             <Download className="h-3.5 w-3.5" />

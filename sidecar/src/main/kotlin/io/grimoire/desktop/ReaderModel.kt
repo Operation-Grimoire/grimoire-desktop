@@ -124,6 +124,7 @@ class ReaderModel(
     private val updater = LibraryUpdater(library) { id -> extensionFor(id)?.source }
     private var libraryUpdateJob: Job? = null
     private val publishLock = Any()
+    @Volatile private var lastScheduledAttempt = 0L
     // The history worker is drained separately from navigation jobs before closing the store.
     private val historyScope = CoroutineScope(SupervisorJob() + operationDispatcher)
     private val historyWrites = OpenedHistoryWrites(historyScope, DesktopOpenedHistoryDao(library)) { failure ->
@@ -724,23 +725,34 @@ class ReaderModel(
             if (state.value.libraryUpdateSettings.updateOnLaunch) startScheduledUpdate()
             while (isActive) {
                 delay(SCHEDULER_TICK_MS)
-                val current = state.value
-                val settings = current.libraryUpdateSettings
+                val settings = state.value.libraryUpdateSettings
                 if (!settings.autoUpdate) continue
-                val last = runCatching { library.lastFullLibraryUpdate() }.getOrNull() ?: 0L
+                // A cancelled or failed attempt waits a full interval too, instead of restarting every tick.
+                val completed = runCatching { library.lastFullLibraryUpdate() }.getOrNull() ?: 0L
+                val last = maxOf(completed, lastScheduledAttempt)
                 if (System.currentTimeMillis() - last >= settings.intervalHours * 3_600_000L) startScheduledUpdate()
             }
         }
     }
 
     private fun startScheduledUpdate() {
-        if (!state.value.offline && state.value.library.isNotEmpty()) updateLibrary(null)
+        if (state.value.offline || state.value.library.isEmpty() || libraryUpdateJob?.isActive == true) return
+        lastScheduledAttempt = System.currentTimeMillis()
+        updateLibrary(null)
     }
 
-    fun setLibraryUpdateSettings(settings: LibraryUpdateSettings) = background("Could not save library update settings") {
-        val value = settings.normalized()
-        mutable.update { it.copy(libraryUpdateSettings = value) }
-        library.setLibraryUpdateSettings(value)
+    /**
+     * Applies [change] to the latest settings at once, so quick successive toggles each build on
+     * the previous one; saves run in order and the last one stores the final value.
+     */
+    fun changeLibraryUpdateSettings(change: (LibraryUpdateSettings) -> LibraryUpdateSettings) {
+        val value = synchronized(operationLock) {
+            if (closing.get()) return
+            val next = change(state.value.libraryUpdateSettings).normalized()
+            mutable.update { it.copy(libraryUpdateSettings = next) }
+            next
+        }
+        background("Could not save library update settings") { library.setLibraryUpdateSettings(value) }
     }
 
     fun retryUpdateIssue(key: NovelKey) {

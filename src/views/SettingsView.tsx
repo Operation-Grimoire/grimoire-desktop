@@ -179,7 +179,7 @@ function LibraryUpdatesSection({ state }: { state: ReaderState }) {
           <ToggleSwitch checked={settings.autoUpdate} onChange={(v) => save({ autoUpdate: v })} />
         </SettingRow>
         {settings.autoUpdate && (
-          <SettingRow title="Frequency" subtitle="Time since the last finished update.">
+          <SettingRow title="Frequency" subtitle="Counted from the last completed whole-library update. Category updates don't move it.">
             <select
               value={settings.intervalHours}
               onChange={(e) => save({ intervalHours: Number(e.target.value) })}
@@ -222,7 +222,8 @@ function LibraryUpdatesSection({ state }: { state: ReaderState }) {
       {state.lastLibraryUpdate && (
         <div className="mt-2.5 flex items-center gap-1.5 text-[12px] text-[var(--text-muted)]">
           <RefreshCw className="h-3 w-3" />
-          Last update {new Date(state.lastLibraryUpdate.finishedAt).toLocaleString()} ·{" "}
+          Last update{state.lastLibraryUpdate.categoryId != null ? " (one category)" : ""}{" "}
+          {new Date(state.lastLibraryUpdate.finishedAt).toLocaleString()} ·{" "}
           {state.lastLibraryUpdate.newChapters} new
           {state.lastLibraryUpdate.errors > 0 ? ` · ${state.lastLibraryUpdate.errors} failed` : ""}
           {state.lastLibraryUpdate.failed ? " · failed" : state.lastLibraryUpdate.cancelled ? " · cancelled" : ""}
