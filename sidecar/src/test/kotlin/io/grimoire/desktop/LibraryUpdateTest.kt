@@ -62,7 +62,7 @@ class LibraryUpdateTest {
             lib.remember(key, novel(), chapters(3, lockedFrom = 3))
             lib.favorite(key, true)
             val outcome = lib.applyRefresh(key, novel(), chapters(4), requireFavorite = true, now = 50_000L)
-            assertEquals(RefreshOutcome.Updated(2, warned = false), outcome)
+            assertEquals(RefreshOutcome.Updated(2), outcome)
             assertEquals(50_000L, lib.book(key)!!.lastUpdated)
         }
         LocalLibrary(dir).use { lib ->
@@ -81,7 +81,7 @@ class LibraryUpdateTest {
             lib.remember(key, novel(), chapters(30))
             lib.favorite(key, true)
             val outcome = lib.applyRefresh(key, novel(title = "Renamed"), chapters(5), requireFavorite = true, now = 1L)
-            assertEquals(RefreshOutcome.Updated(0, warned = true), outcome)
+            assertEquals(RefreshOutcome.Updated(0, ISSUE_CHAPTER_LIST_CHANGED), outcome)
             val book = lib.book(key)!!
             assertEquals(30, book.chapters.size)
             assertEquals("Renamed", book.novel.title)
@@ -104,6 +104,10 @@ class LibraryUpdateTest {
             val manual = lib.applyRefresh(key, novel(), chapters(4), requireFavorite = false, now = 1L)
             assertEquals(1, manual.newChapters)
             assertTrue(lib.libraryUpdates().isEmpty())
+            // A truncated response for a browsed novel reports back without a library issue.
+            val kept = lib.applyRefresh(key, novel(), emptyList(), requireFavorite = false, now = 2L)
+            assertEquals(RefreshOutcome.Updated(0, ISSUE_NO_CHAPTERS), kept)
+            assertTrue(lib.updateIssues().isEmpty())
             assertEquals(4, lib.book(key)!!.chapters.size)
         }
     }
@@ -119,6 +123,15 @@ class LibraryUpdateTest {
             lib.applyRefresh(key, novel(), chapters(3), requireFavorite = true, now = 2L)
             assertTrue(lib.libraryUpdates().isEmpty())
         }
+    }
+
+    @Test
+    fun failuresAreDescribedInPlainWords() {
+        assertEquals("The source took too long to respond", describe(java.net.SocketTimeoutException("timeout")))
+        assertEquals("Could not reach the source", describe(java.net.UnknownHostException("x.example")))
+        assertTrue(describe(IllegalStateException("HTTP 429 Too Many Requests")).contains("HTTP 429"))
+        assertEquals("The source could not be read", describe(IllegalStateException()))
+        assertFalse(describe(org.json.JSONException("bad")).contains("JSONException"))
     }
 
     @Test

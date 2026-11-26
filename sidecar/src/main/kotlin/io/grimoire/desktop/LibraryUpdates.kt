@@ -177,7 +177,10 @@ internal fun metadataRegressed(old: Novel, fetched: Novel): Boolean =
 internal sealed interface RefreshOutcome {
     val newChapters: Int get() = 0
 
-    data class Updated(override val newChapters: Int, val warned: Boolean) : RefreshOutcome
+    /** [warning] is the issue recorded for a library novel, or what a manual refresh reports. */
+    data class Updated(override val newChapters: Int, val warning: String? = null) : RefreshOutcome {
+        val warned: Boolean get() = warning != null
+    }
     data object Failed : RefreshOutcome
     data object Skipped : RefreshOutcome
 }
@@ -276,7 +279,7 @@ internal class LibraryUpdater(
         val source = sourceFor(book.key.sourceId)
         if (source == null) {
             library.setUpdateIssue(book.key, title, UpdateIssueSeverity.WARNING, ISSUE_SOURCE_MISSING)
-            return RefreshOutcome.Updated(0, warned = true)
+            return RefreshOutcome.Updated(0, ISSUE_SOURCE_MISSING)
         }
         // Self-contained sources (EPUB-style) have no chapter list to refresh.
         if (source !is ChapterListSource && source !is CursorPaginatedSource) {
@@ -322,5 +325,22 @@ internal suspend fun <T> retrySourceCall(attempts: Int = 2, block: suspend () ->
     throw last!!
 }
 
-internal fun describe(failure: Throwable): String =
-    "${failure.javaClass.simpleName}: ${failure.message ?: "(no message)"}"
+/** A 4xx/5xx status named in a source error, e.g. "HTTP 429" or "status code: 503". */
+private val HTTP_STATUS = Regex("""(?i)\b(?:http|status|code)\D{0,3}([45]\d\d)\b""")
+
+/** Readable text for the issues list; the raw exception goes to the log. */
+internal fun describe(failure: Throwable): String {
+    System.getLogger("LibraryUpdate").log(System.Logger.Level.WARNING, "Refresh failed", failure)
+    val detail = failure.message?.trim()?.takeIf { it.isNotEmpty() && it.length <= 160 }
+    val http = detail?.let { HTTP_STATUS.find(it)?.groupValues?.get(1)?.toIntOrNull() }
+    return when {
+        failure is java.net.SocketTimeoutException || failure is java.io.InterruptedIOException -> "The source took too long to respond"
+        failure is java.net.UnknownHostException || failure is java.net.ConnectException -> "Could not reach the source"
+        failure is javax.net.ssl.SSLException -> "Secure connection to the source failed"
+        http == 403 || http == 429 -> "The source refused the request (HTTP $http) — it may be rate limiting or need a login"
+        http == 404 -> "The source no longer has this novel (HTTP 404)"
+        http != null && http >= 500 -> "The source is having problems (HTTP $http)"
+        failure is java.io.IOException -> "Network error" + (detail?.let { ": $it" } ?: "")
+        else -> "The source could not be read" + (detail?.let { ": $it" } ?: "")
+    }
+}

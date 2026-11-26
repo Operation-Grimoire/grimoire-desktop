@@ -415,7 +415,7 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
             .put("isHidden", c.isHidden)
     }))
     .put("updates", updatesJson())
-    .put("updateIssues", JSONArray(updateIssues.map { issue ->
+    .put("updateIssues", JSONArray(updateIssues.filter { issue -> library.any { it.key == issue.key } }.map { issue ->
         JSONObject()
             .put("sourceId", issue.key.sourceId)
             .put("novelUrl", issue.key.url)

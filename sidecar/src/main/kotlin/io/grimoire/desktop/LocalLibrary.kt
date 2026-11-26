@@ -179,21 +179,26 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
             val title = current.effectiveNovel().title
             val merged = mergeNovelMetadata(current.novel, fetched).copy(url = key.url)
             val regressed = metadataRegressed(current.novel, fetched)
+            // Issues, like the feed, belong to library novels; a browsed novel only reports back.
+            fun report(message: String?) {
+                if (message != null && current.favorite) putIssue(key, title, UpdateIssueSeverity.WARNING, message, now)
+                else db.execute("DELETE FROM update_issues WHERE source_id=? AND novel_url=?", key.sourceId, key.url)
+            }
             when (val plan = planChapterRefresh(current.chapters, unique)) {
                 is ChapterRefreshPlan.Keep -> {
                     storeBook(key, current, merged, current.chapters, current.lastUpdated)
-                    putIssue(key, title, UpdateIssueSeverity.WARNING, plan.reason, now)
-                    RefreshOutcome.Updated(0, warned = true)
+                    report(plan.reason)
+                    RefreshOutcome.Updated(0, plan.reason)
                 }
                 is ChapterRefreshPlan.Apply -> {
                     val found = plan.found
                     storeBook(key, current, merged, unique, if (found.isNotEmpty()) now else current.lastUpdated)
                     val shownTitle = current.overrides.title ?: merged.title
                     if (found.size > MAX_LOGGED_NEW_CHAPTERS) {
-                        putIssue(key, title, UpdateIssueSeverity.WARNING,
-                            "${found.size} chapters appeared at once — update entries suppressed " +
-                                "(source likely recovered from an earlier bad sync)", now)
-                        return@write RefreshOutcome.Updated(0, warned = true)
+                        val burst = "${found.size} chapters appeared at once — update entries suppressed " +
+                                "(source likely recovered from an earlier bad sync)"
+                        report(burst)
+                        return@write RefreshOutcome.Updated(0, burst)
                     }
                     // Only library novels feed the updates list; a browsed novel's refresh is not news.
                     if (current.favorite) found.forEach { (chapter, unlocked) ->
@@ -206,9 +211,9 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
                             key.sourceId, key.url, chapter.url, shownTitle, chapter.name, chapter.chapterNumber.toDouble(),
                             now, if (chapter.locked) 1 else 0, if (unlocked) 1 else 0)
                     }
-                    if (regressed) putIssue(key, title, UpdateIssueSeverity.WARNING, ISSUE_REGRESSION, now)
-                    else db.execute("DELETE FROM update_issues WHERE source_id=? AND novel_url=?", key.sourceId, key.url)
-                    RefreshOutcome.Updated(found.size, warned = regressed)
+                    val warning = ISSUE_REGRESSION.takeIf { regressed }
+                    report(warning)
+                    RefreshOutcome.Updated(found.size, warning)
                 }
             }
         }.also { book(key) }
@@ -221,7 +226,7 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
     }
 
     @Synchronized internal fun setUpdateIssue(key: NovelKey, title: String, severity: UpdateIssueSeverity, message: String) {
-        write { if (book(key) != null) putIssue(key, title, severity, message, System.currentTimeMillis()) }
+        write { if (book(key)?.favorite == true) putIssue(key, title, severity, message, System.currentTimeMillis()) }
     }
 
     @Synchronized internal fun clearUpdateIssue(key: NovelKey) {

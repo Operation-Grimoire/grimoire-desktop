@@ -582,9 +582,7 @@ class ReaderModel(
         val chapters = sourceChapters(source, mergeNovelMetadata(current.novel, details))
         val outcome = library.applyRefresh(current.key, details, chapters, requireFavorite = false, System.currentTimeMillis())
         publishUpdateResults(current.key)
-        if (outcome is RefreshOutcome.Updated && outcome.warned) {
-            library.updateIssues().firstOrNull { it.key == current.key }?.let { error(it.message) }
-        }
+        (outcome as? RefreshOutcome.Updated)?.warning?.let { error(it) }
     }
 
     fun downloadChapters(chapterUrls: List<String>) = operate {

@@ -20,6 +20,7 @@ import { coverUrl, rpc } from "../api/client";
 import { HeaderBar } from "../components/HeaderBar";
 import { EmptyState } from "../components/EmptyState";
 import { LibraryUpdateButton } from "../components/LibraryUpdateButton";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 
 type Tab = "UPDATES" | "ISSUES";
 
@@ -212,33 +213,16 @@ export function UpdatesView({
       </div>
 
       {confirmClear && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 backdrop-blur-xs">
-          <div className="w-[380px] rounded-2xl border border-[var(--border-strong)] bg-[var(--bg-elevated)] p-5 shadow-2xl">
-            <h3 className="text-[15px] font-semibold text-[var(--text-primary)]">Clear updates?</h3>
-            <p className="mt-1.5 text-[13px] text-[var(--text-secondary)]">
-              This empties the list. Chapters, read state and downloads stay as they are.
-            </p>
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setConfirmClear(false)}
-                className="h-8 rounded-full border border-[var(--border-strong)] px-3.5 text-[12.5px] font-medium text-[var(--text-primary)] hover:bg-[var(--row-hover)]"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setConfirmClear(false);
-                  rpc("clearUpdates");
-                }}
-                className="h-8 rounded-full bg-[var(--danger)] px-4 text-[12.5px] font-medium text-white hover:opacity-90"
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          title="Clear updates?"
+          message="This empties the list. Chapters, read state and downloads stay as they are."
+          confirmLabel="Clear"
+          onCancel={() => setConfirmClear(false)}
+          onConfirm={() => {
+            setConfirmClear(false);
+            rpc("clearUpdates");
+          }}
+        />
       )}
     </div>
   );
