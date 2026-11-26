@@ -186,7 +186,6 @@ class ReaderModel(
         .map { BrowseSource(it.sourceId, it.source.name, it.source.lang.code) }
         .sortedBy { it.name.lowercase() }
 
-    /** Publishes the source list and keeps the Browse selection only while its source is still loaded. */
     // The current source's own filter objects; searches pass these, with the UI's states written in.
     private val filterLock = Any()
     @Volatile private var filterSource: Source? = null
@@ -210,7 +209,12 @@ class ReaderModel(
             entries = filterDefaults,
             searchWithFilters = runCatching { (source as SearchSource).supportsSearchWithFilters }.getOrDefault(false),
         )
-        mutable.update { it.copy(browseFilters = panel) }
+        mutable.update { st ->
+            // Results filtered through the replaced objects can't be paged further; start over.
+            if (st.browseFilters?.applied == true && st.browseMode == BrowseMode.SEARCH) {
+                st.copy(browseFilters = panel, novels = emptyList(), browsePage = 0, browseHasMore = false)
+            } else st.copy(browseFilters = panel)
+        }
     }
 
     /** Puts every filter back to its default; the listing is no longer filtered. */
@@ -274,6 +278,7 @@ class ReaderModel(
         }
     }
 
+    /** Publishes the source list and keeps the Browse selection only while its source is still loaded. */
     private fun publishSources(select: Long? = null) {
         val sources = browseSources()
         mutable.update { current ->
