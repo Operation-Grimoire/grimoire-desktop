@@ -1,23 +1,31 @@
 import React from "react";
 
-/**
- * Safely renders Grimoire's constrained inline HTML subset (<i>, <em>, <b>, <strong>, <u>,
- * <s>, <del>, <sub>, <sup>, <br>, <code>, <a href="https://...">) into React elements without
- * using dangerouslySetInnerHTML.
- */
-const KNOWN_TAG =
-  /<\/?(?:br|p|div|span|i|em|b|strong|u|s|del|strike|sub|sup|code|blockquote|a)(?:\s[^<>]*)?\/?>/i;
+/** Tags with a rendering below; anything else is unwrapped to its text. */
+const TAG_PATTERN =
+  "\\/?(?:br|p|div|span|i|em|b|strong|u|s|del|strike|sub|sup|code|blockquote|a)(?:\\s[^<>]*)?\\/?>";
+const KNOWN_TAG = new RegExp(`<${TAG_PATTERN}`, "i");
+const STRAY_OPEN = new RegExp(`<(?!${TAG_PATTERN})`, "gi");
 
 /** True when the text carries markup we render; plain text with stray "<" or "&" is left alone. */
 export function looksLikeHtml(text: string): boolean {
   return KNOWN_TAG.test(text);
 }
 
-/** Renders markup when present, otherwise returns the text verbatim. */
+/**
+ * Renders markup when present, otherwise returns the text verbatim. In marked-up text a "<"
+ * that does not open a known tag, such as "Book 1 <The Beginning>", is kept as text.
+ */
 export function renderRichText(text: string): React.ReactNode {
-  return looksLikeHtml(text) ? renderSafeHtml(text) : text;
+  if (!looksLikeHtml(text)) return text;
+  return renderSafeHtml(text.replace(STRAY_OPEN, "&lt;"));
 }
 
+/**
+ * Safely renders Grimoire's constrained HTML subset (<i>, <em>, <b>, <strong>, <u>, <s>,
+ * <del>, <strike>, <sub>, <sup>, <br>, <code>, <blockquote>, <p>, <div>, <span>,
+ * <a href="https://...">) into React elements without using dangerouslySetInnerHTML.
+ * Other tags are unwrapped to their children.
+ */
 export function renderSafeHtml(html: string): React.ReactNode {
   const parser = new DOMParser();
   const doc = parser.parseFromString(`<div>${html}</div>`, "text/html");
@@ -64,6 +72,16 @@ function convertNode(node: ChildNode, key: string): React.ReactNode {
           {children}
         </code>
       );
+    // Block spans, not <p>/<div>: the reader already wraps each page in a <p>.
+    case "p":
+    case "div":
+      return (
+        <span key={key} className="mb-2 block last:mb-0">
+          {children}
+        </span>
+      );
+    case "span":
+      return <React.Fragment key={key}>{children}</React.Fragment>;
     case "blockquote":
       return (
         <blockquote
