@@ -12,9 +12,15 @@ const LOOSE_TAGS =
   "div|span|blockquote|hr|h[1-6]|ul|ol|li|center|table|thead|tbody|tr|td|th|pre|section|" +
   "article|header|footer|figure|figcaption|dl|dt|dd";
 
-/** Case-insensitive tag names, keeping the rest of the pattern case-sensitive. */
+/**
+ * Case-insensitive tag names, keeping the rest of the pattern case-sensitive. One-letter names
+ * stay lowercase: "Rank <S>", "Class <B>" or "<A>-grade" in a synopsis are grades, not markup.
+ */
 const anyCase = (names: string) =>
-  names.replace(/[a-z]/g, (c) => `[${c}${c.toUpperCase()}]`);
+  names
+    .split("|")
+    .map((name) => (name.length === 1 ? name : name.replace(/[a-z]/g, (c) => `[${c}${c.toUpperCase()}]`)))
+    .join("|");
 
 const VALUE_ATTRIBUTE = String.raw`[\w:-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'<>=` + "`" + String.raw`]+)`;
 const BARE_ATTRIBUTE = "[a-z][a-z0-9:-]*";
