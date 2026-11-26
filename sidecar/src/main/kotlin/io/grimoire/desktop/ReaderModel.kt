@@ -89,6 +89,8 @@ data class ReaderState(
     val autoBackup: AutoBackupSettings = AutoBackupSettings(),
     val lastAutoBackup: AutoBackupStatus? = null,
     val autoBackupRunning: Boolean = false,
+    /** New-chapter notifications for the window to post; it acknowledges each once shown. */
+    val chapterAlerts: List<ChapterAlert> = emptyList(),
 )
 
 data class BrowseSource(val sourceId: Long, val name: String, val lang: String)
@@ -143,6 +145,7 @@ class ReaderModel(
     @Volatile private var lastScheduledAttempt = 0L
     /** Outside-library novels already retried after a library update this session. */
     private val leftoverAttempts: MutableSet<NovelKey> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val alertIds = AtomicLong(0)
     // The history worker is drained separately from navigation jobs before closing the store.
     private val historyScope = CoroutineScope(SupervisorJob() + operationDispatcher)
     private val historyWrites = OpenedHistoryWrites(historyScope, DesktopOpenedHistoryDao(library)) { failure ->
@@ -778,6 +781,51 @@ class ReaderModel(
         }
     }
 
+    /** Queues a notification and an automatic download for a library novel, as its settings ask. */
+    private fun noteNewChapters(key: NovelKey, found: List<Chapter>, autoDownloads: MutableMap<NovelKey, List<String>>) {
+        val book = library.book(key)?.takeIf { it.favorite } ?: return
+        val plan = planNewChapters(book.alerts, found)
+        if (plan.readable + plan.locked > 0) {
+            val alert = ChapterAlert(alertIds.incrementAndGet(), key, book.effectiveNovel().title, plan.readable, plan.locked)
+            mutable.update { st -> st.copy(chapterAlerts = (st.chapterAlerts + alert).takeLast(MAX_PENDING_ALERTS)) }
+        }
+        if (plan.download.isNotEmpty()) autoDownloads.merge(key, plan.download) { a, b -> a + b }
+    }
+
+    private suspend fun downloadNewChapters(queue: Map<NovelKey, List<String>>) {
+        val total = queue.values.sumOf { it.size }
+        var done = 0
+        var failedNovels = 0
+        for ((key, urls) in queue) {
+            val book = library.book(key) ?: continue
+            mutable.update { st ->
+                st.copy(libraryUpdate = st.libraryUpdate?.copy(done = done, total = total,
+                    current = "Downloading ${book.effectiveNovel().title}"))
+            }
+            try {
+                downloadInto(book, urls)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                failedNovels++
+            }
+            done += urls.size
+        }
+        if (failedNovels > 0) {
+            mutable.update { it.copy(error = "Couldn't download new chapters for ${plural(failedNovels, "novel")}") }
+        }
+    }
+
+    /** Drops notifications the window has shown. */
+    fun acknowledgeChapterAlerts(ids: Collection<Long>) {
+        val shown = ids.toSet()
+        mutable.update { st -> st.copy(chapterAlerts = st.chapterAlerts.filterNot { it.id in shown }) }
+    }
+
+    fun setNewChapterAlerts(key: NovelKey, change: (NewChapterAlerts) -> NewChapterAlerts) = mutateBook(key) {
+        it.copy(alerts = change(it.alerts))
+    }
+
     fun cancelLibraryUpdate() {
         libraryUpdateJob?.cancel()
     }
@@ -790,6 +838,8 @@ class ReaderModel(
         val lastPublish = AtomicLong(0L)
         var finished = false
         var failed = false
+        // Novels that asked for new chapters to be downloaded, drained after the refresh like Android.
+        val autoDownloads = java.util.concurrent.ConcurrentHashMap<NovelKey, List<String>>()
         try {
             val settings = state.value.libraryUpdateSettings
             // Chosen novels may be outside the library (restored reading history).
@@ -814,6 +864,7 @@ class ReaderModel(
                         is RefreshOutcome.Updated -> {
                             found.addAndGet(outcome.newChapters)
                             if (outcome.warned) warnings.incrementAndGet()
+                            if (outcome.found.isNotEmpty()) runCatching { noteNewChapters(key, outcome.found, autoDownloads) }
                         }
                         RefreshOutcome.Failed -> errors.incrementAndGet()
                         RefreshOutcome.Skipped -> Unit
@@ -828,6 +879,7 @@ class ReaderModel(
                 },
             )
             finished = true
+            if (autoDownloads.isNotEmpty() && !state.value.offline) downloadNewChapters(autoDownloads)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
@@ -1520,6 +1572,8 @@ class ReaderModel(
 
 private const val LAUNCH_UPDATE_DELAY_MS = 8_000L
 private const val LAUNCH_BACKUP_DELAY_MS = 20_000L
+/** Notifications waiting for the window; older ones drop off if it never shows them. */
+private const val MAX_PENDING_ALERTS = 50
 private const val BACKUP_SHUTDOWN_MS = 30_000L
 /** Plenty for seven per folder across many folders; the oldest names drop off. */
 private const val OWNED_AUTO_BACKUP_LIMIT = 200

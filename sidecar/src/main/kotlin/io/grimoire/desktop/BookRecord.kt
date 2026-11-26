@@ -27,6 +27,10 @@ internal fun encodeBook(book: SavedBook): JSONObject = JSONObject()
     .put("chapterSortOrder", book.chapterSortOrder.name)
     .apply { if (book.chaptersIncomplete) put("chaptersIncomplete", true) }
     .apply {
+        val a = book.alerts
+        if (a.any) put("alerts", JSONObject().put("notify", a.notify).put("notifyLocked", a.notifyLocked).put("autoDownload", a.autoDownload))
+    }
+    .apply {
         if (!book.overrides.isEmpty) {
             val ov = JSONObject()
             book.overrides.title?.let { ov.put("title", it) }
@@ -87,5 +91,8 @@ internal fun decodeBook(root: JSONObject): SavedBook {
         chapterSortOrder = ChapterSort.entries.firstOrNull { it.name == root.optString("chapterSortOrder") } ?: ChapterSort.NUMBER_ASC,
         overrides = overrides,
         chaptersIncomplete = root.optBoolean("chaptersIncomplete", false),
+        alerts = root.optJSONObject("alerts")?.let {
+            NewChapterAlerts(it.optBoolean("notify"), it.optBoolean("notifyLocked"), it.optBoolean("autoDownload"))
+        } ?: NewChapterAlerts(),
     )
 }

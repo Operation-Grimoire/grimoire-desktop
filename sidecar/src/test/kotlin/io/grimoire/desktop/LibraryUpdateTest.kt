@@ -62,7 +62,8 @@ class LibraryUpdateTest {
             lib.remember(key, novel(), chapters(3, lockedFrom = 3))
             lib.favorite(key, true)
             val outcome = lib.applyRefresh(key, novel(), chapters(4), requireFavorite = true, now = 50_000L)
-            assertEquals(RefreshOutcome.Updated(2), outcome)
+            assertEquals(2, outcome.newChapters)
+            assertEquals(listOf("/c/3", "/c/4"), (outcome as RefreshOutcome.Updated).found.map { it.url })
             assertEquals(50_000L, lib.book(key)!!.lastUpdated)
         }
         LocalLibrary(dir).use { lib ->

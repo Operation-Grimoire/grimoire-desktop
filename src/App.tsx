@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AlertCircle, BookOpen, X } from "lucide-react";
 import type { ReaderState, ViewName } from "./api/types";
 import { getInitialState, rpc, subscribeDaemon } from "./api/client";
+import { useChapterAlerts } from "./api/chapterAlerts";
 import { Sidebar } from "./components/Sidebar";
 import { LibraryView } from "./views/LibraryView";
 import { BrowseView } from "./views/BrowseView";
@@ -21,6 +22,9 @@ export default function App() {
   const [systemDark, setSystemDark] = useState(() =>
     window.matchMedia("(prefers-color-scheme: dark)").matches,
   );
+
+  // New-chapter notifications from library updates.
+  useChapterAlerts(state?.chapterAlerts);
 
   // Track OS dark mode changes.
   useEffect(() => {
