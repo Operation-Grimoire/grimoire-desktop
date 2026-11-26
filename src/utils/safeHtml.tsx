@@ -1,14 +1,27 @@
 import React from "react";
 
+/** Tags rendered below; other HTML elements are unwrapped to their text. */
+const RENDERED_TAGS = "br|p|div|span|i|em|b|strong|u|s|del|strike|sub|sup|code|blockquote|a";
+/** Other real HTML elements that scraped synopses use; these are never escaped as text. */
+const OTHER_TAGS =
+  "hr|h[1-6]|ul|ol|li|img|font|center|table|thead|tbody|tr|td|th|small|big|mark|q|cite|abbr|" +
+  "ins|pre|section|article|header|footer|figure|figcaption|dl|dt|dd";
+
+/** Case-insensitive tag names, keeping the rest of the pattern case-sensitive. */
+const anyCase = (names: string) =>
+  names.replace(/[a-z]/g, (c) => `[${c}${c.toUpperCase()}]`);
+
 /**
- * Tags with a rendering below; anything else is unwrapped to its text. Attributes must be
- * name=value pairs, so a bracketed title such as "<A Will Eternal>" is not taken for a tag.
+ * Attributes are name=value pairs or bare lowercase names (`hidden`). A bracketed title such as
+ * "<A Will Eternal>" or "<I Shall Seal the Heavens>" has capitalised words, so it is not a tag.
  */
-const TAG_PATTERN =
-  /\/?(?:br|p|div|span|i|em|b|strong|u|s|del|strike|sub|sup|code|blockquote|a)(?:\s+[\w:-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'<>=`]+))*\s*\/?>/
-    .source;
-const KNOWN_TAG = new RegExp(`<${TAG_PATTERN}`, "i");
-const STRAY_OPEN = new RegExp(`<(?!${TAG_PATTERN})`, "gi");
+const ATTRIBUTES = String.raw`(?:\s+(?:[\w:-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'<>=` + "`" +
+  String.raw`]+)|[a-z][a-z0-9:-]*))*\s*\/?>`;
+const tagPattern = (names: string) => String.raw`\/?(?:${anyCase(names)})` + ATTRIBUTES;
+
+const ANY_TAG = tagPattern(`${RENDERED_TAGS}|${OTHER_TAGS}`);
+const KNOWN_TAG = new RegExp(`<${ANY_TAG}`);
+const STRAY_OPEN = new RegExp(`<(?!${ANY_TAG}|!--)`, "g");
 
 /** True when the text carries markup we render; plain text with stray "<" or "&" is left alone. */
 export function looksLikeHtml(text: string): boolean {
@@ -28,7 +41,8 @@ export function renderRichText(text: string): React.ReactNode {
  * Safely renders Grimoire's constrained HTML subset (<i>, <em>, <b>, <strong>, <u>, <s>,
  * <del>, <strike>, <sub>, <sup>, <br>, <code>, <blockquote>, <p>, <div>, <span>,
  * <a href="https://...">) into React elements without using dangerouslySetInnerHTML.
- * Other tags are unwrapped to their children.
+ * Block-like tags (lists, headings, <hr>, table rows) become line-separated blocks; any other
+ * tag is unwrapped to its children.
  */
 export function renderSafeHtml(html: string): React.ReactNode {
   const parser = new DOMParser();
@@ -79,6 +93,20 @@ function convertNode(node: ChildNode, key: string): React.ReactNode {
     // Block spans, not <p>/<div>: the reader already wraps each page in a <p>.
     case "p":
     case "div":
+    case "li":
+    case "ul":
+    case "ol":
+    case "h1":
+    case "h2":
+    case "h3":
+    case "h4":
+    case "h5":
+    case "h6":
+    case "center":
+    case "pre":
+    case "section":
+    case "article":
+    case "tr":
       return (
         <span key={key} className="mb-2 block last:mb-0">
           {children}
@@ -86,6 +114,8 @@ function convertNode(node: ChildNode, key: string): React.ReactNode {
       );
     case "span":
       return <React.Fragment key={key}>{children}</React.Fragment>;
+    case "hr":
+      return <span key={key} className="my-2 block border-t border-current opacity-20" />;
     case "blockquote":
       return (
         <blockquote
