@@ -252,6 +252,8 @@ export interface ReaderState {
   browseHasMore: boolean;
   extensionNotice: string | null;
   localExtension: string | null;
+  /** Progress or result of the last backup or restore. */
+  backupNotice: string | null;
   positionNotice: string | null;
   sources: BrowseSource[];
   categories: DesktopCategory[];

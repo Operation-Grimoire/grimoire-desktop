@@ -25,6 +25,7 @@ internal fun encodeBook(book: SavedBook): JSONObject = JSONObject()
     .apply { book.userRating?.let { put("userRating", it) } }
     .put("readerTextAlign", book.readerTextAlign.name)
     .put("chapterSortOrder", book.chapterSortOrder.name)
+    .apply { if (book.chaptersIncomplete) put("chaptersIncomplete", true) }
     .apply {
         if (!book.overrides.isEmpty) {
             val ov = JSONObject()
@@ -85,5 +86,6 @@ internal fun decodeBook(root: JSONObject): SavedBook {
         readerTextAlign = ReaderTextAlign.entries.firstOrNull { it.name == root.optString("readerTextAlign") } ?: ReaderTextAlign.AUTO,
         chapterSortOrder = ChapterSort.entries.firstOrNull { it.name == root.optString("chapterSortOrder") } ?: ChapterSort.NUMBER_ASC,
         overrides = overrides,
+        chaptersIncomplete = root.optBoolean("chaptersIncomplete", false),
     )
 }

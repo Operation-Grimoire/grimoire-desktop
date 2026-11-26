@@ -10,12 +10,15 @@ export function ConfirmDialog({
   confirmLabel,
   onConfirm,
   onCancel,
+  tone = "danger",
 }: {
   title: string;
   message: string;
   confirmLabel: string;
   onConfirm: () => void;
   onCancel: () => void;
+  /** Destructive actions use the danger colour; safe confirmations use the accent. */
+  tone?: "danger" | "accent";
 }) {
   const titleId = useId();
   const messageId = useId();
@@ -83,7 +86,11 @@ export function ConfirmDialog({
           <button
             type="button"
             onClick={onConfirm}
-            className="h-8 rounded-full bg-[var(--danger)] px-4 text-[12.5px] font-medium text-white hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--danger)]"
+            className={`h-8 rounded-full px-4 text-[12.5px] font-medium hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 ${
+              tone === "danger"
+                ? "bg-[var(--danger)] text-white focus-visible:outline-[var(--danger)]"
+                : "bg-[var(--accent)] text-[var(--accent-fg)] focus-visible:outline-[var(--accent)]"
+            }`}
           >
             {confirmLabel}
           </button>

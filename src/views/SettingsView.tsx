@@ -4,6 +4,7 @@ import type { ColorTheme, LibraryUpdateSettings, ReaderState, ThemeMode } from "
 import { rpc } from "../api/client";
 import { HeaderBar } from "../components/HeaderBar";
 import { ToggleSwitch } from "./HistoryView";
+import { BackupSection } from "../components/BackupSection";
 
 const PALETTES: { id: ColorTheme; label: string; dots: [string, string, string] }[] = [
   { id: "DEFAULT", label: "Default", dots: ["#a78bfa", "#c4b5fd", "#f472b6"] },
@@ -124,6 +125,8 @@ export function SettingsView({ state }: { state: ReaderState }) {
 
           {/* Library updates */}
           <LibraryUpdatesSection state={state} />
+
+          <BackupSection state={state} />
 
           {/* Network */}
           <section className="border-t border-[var(--border-hairline)] pt-6">
