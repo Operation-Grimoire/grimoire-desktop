@@ -112,7 +112,6 @@ data class LibraryUpdateSummary(
     }
 }
 
-/** Live progress of the running refresh; `null` in state when idle. */
 /** Android's per-novel "New chapters" settings. */
 data class NewChapterAlerts(
     /** Notify when a library update finds readable chapters. */
@@ -144,11 +143,15 @@ internal fun planNewChapters(alerts: NewChapterAlerts, found: List<Chapter>): Ne
     )
 }
 
+/** Live progress of the running refresh; `null` in state when idle. */
 data class LibraryUpdateProgress(
     val done: Int,
     val total: Int,
+    /** The novel being checked, or downloaded when [downloading]. */
     val current: String?,
     val categoryId: Long?,
+    /** After the refresh: [done] and [total] count chapters downloaded automatically. */
+    val downloading: Boolean = false,
 )
 
 internal const val ISSUE_NO_CHAPTERS = "Source returned no chapters — kept the existing list"

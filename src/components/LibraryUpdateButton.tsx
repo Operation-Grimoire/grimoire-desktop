@@ -1,4 +1,4 @@
-import { RefreshCw, X } from "lucide-react";
+import { Download, RefreshCw, X } from "lucide-react";
 import type { ReaderState } from "../api/types";
 import { rpc } from "../api/client";
 
@@ -18,14 +18,24 @@ export function LibraryUpdateButton({
     const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
     return (
       <div
-        title={progress.current ? `Checking ${progress.current}` : "Updating library"}
+        title={
+          progress.downloading
+            ? `Downloading new chapters${progress.current ? `: ${progress.current}` : ""}`
+            : progress.current
+              ? `Checking ${progress.current}`
+              : "Updating library"
+        }
         className="relative inline-flex h-8 items-center gap-2 overflow-hidden rounded-full border border-[var(--accent)]/40 bg-[var(--accent-soft)] pl-3 pr-1 text-[12px] font-medium text-[var(--accent)]"
       >
         <span
           className="absolute inset-y-0 left-0 bg-[var(--accent)]/15 transition-[width] duration-300"
           style={{ width: `${pct}%` }}
         />
-        <RefreshCw className="relative h-3.5 w-3.5 animate-spin" />
+        {progress.downloading ? (
+          <Download className="relative h-3.5 w-3.5 animate-pulse" />
+        ) : (
+          <RefreshCw className="relative h-3.5 w-3.5 animate-spin" />
+        )}
         <span className="relative tabular-nums">
           {progress.total > 0 ? `${progress.done}/${progress.total}` : "Starting…"}
         </span>

@@ -800,7 +800,7 @@ class ReaderModel(
             val book = library.book(key) ?: continue
             mutable.update { st ->
                 st.copy(libraryUpdate = st.libraryUpdate?.copy(done = done, total = total,
-                    current = "Downloading ${book.effectiveNovel().title}"))
+                    current = book.effectiveNovel().title, downloading = true))
             }
             try {
                 downloadInto(book, urls)

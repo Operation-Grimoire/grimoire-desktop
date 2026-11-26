@@ -466,6 +466,7 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
             .put("total", p.total)
             .put("current", p.current ?: JSONObject.NULL)
             .put("categoryId", p.categoryId ?: JSONObject.NULL)
+            .put("downloading", p.downloading)
     } ?: JSONObject.NULL)
     .put("lastLibraryUpdate", lastLibraryUpdate?.let { s ->
         JSONObject()

@@ -234,8 +234,11 @@ export interface UpdateIssue {
 export interface LibraryUpdateProgress {
   done: number;
   total: number;
+  /** The novel being checked, or downloaded when `downloading`. */
   current: string | null;
   categoryId: number | null;
+  /** After the refresh: done/total count chapters downloaded automatically. */
+  downloading: boolean;
 }
 
 export interface LibraryUpdateSummary {

@@ -16,22 +16,30 @@ const ROWS: { key: AlertKey; title: string; hint: string }[] = [
 export function NewChapterAlertsButton({ book }: { book: SavedBook }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const alerts = book.alerts;
   const on = alerts.notify || alerts.notifyLocked || alerts.autoDownload;
 
   useEffect(() => {
     if (!open) return;
+    panelRef.current?.querySelector<HTMLElement>("button")?.focus();
     const onDown = (e: MouseEvent) => {
       if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
     };
+    // Capture phase, so Escape closes only the popover and never reaches the app's "back" shortcut.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+      triggerRef.current?.focus();
     };
     document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
     return () => {
       document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, true);
     };
   }, [open]);
 
@@ -39,6 +47,7 @@ export function NewChapterAlertsButton({ book }: { book: SavedBook }) {
   return (
     <div ref={rootRef} className="relative" onClick={(e) => e.stopPropagation()}>
       <button
+        ref={triggerRef}
         type="button"
         aria-expanded={open}
         aria-haspopup="dialog"
@@ -54,6 +63,7 @@ export function NewChapterAlertsButton({ book }: { book: SavedBook }) {
       </button>
       {open && (
         <div
+          ref={panelRef}
           role="dialog"
           aria-label="New chapters"
           className="absolute left-0 top-11 z-30 w-[300px] rounded-xl border border-[var(--border-strong)] bg-[var(--bg-elevated)] p-1.5 shadow-2xl"
