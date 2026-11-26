@@ -212,6 +212,15 @@ private fun dispatchMethod(method: String, params: JSONObject, model: ReaderMode
             if (params.has("categoryId") && !params.isNull("categoryId")) params.getLong("categoryId") else null,
         )
 
+        "setNewChapterAlerts" -> model.setNewChapterAlerts(NovelKey(params.sourceId(), params.getString("novelUrl"))) { current ->
+            current.copy(
+                notify = params.optBoolean("notify", current.notify),
+                notifyLocked = params.optBoolean("notifyLocked", current.notifyLocked),
+                autoDownload = params.optBoolean("autoDownload", current.autoDownload),
+            )
+        }
+        "ackChapterAlerts" -> model.acknowledgeChapterAlerts(params.longs("ids"))
+
         "setBookRating" -> model.setBookRating(
             NovelKey(params.sourceId(), params.getString("novelUrl")),
             if (params.has("rating") && !params.isNull("rating")) params.getInt("rating") else null,
@@ -457,6 +466,7 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
             .put("total", p.total)
             .put("current", p.current ?: JSONObject.NULL)
             .put("categoryId", p.categoryId ?: JSONObject.NULL)
+            .put("downloading", p.downloading)
     } ?: JSONObject.NULL)
     .put("lastLibraryUpdate", lastLibraryUpdate?.let { s ->
         JSONObject()
@@ -489,6 +499,15 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
             .put("fileName", s.fileName ?: JSONObject.NULL)
     } ?: JSONObject.NULL)
     .put("autoBackupRunning", autoBackupRunning)
+    .put("chapterAlerts", JSONArray(chapterAlerts.map { a ->
+        JSONObject()
+            .put("id", a.id)
+            .put("sourceId", a.key.sourceId.toString())
+            .put("novelUrl", a.key.url)
+            .put("title", a.title)
+            .put("readable", a.readable)
+            .put("locked", a.locked)
+    }))
     .put("appearance", JSONObject()
         .put("themeMode", appearance.themeMode.name)
         .put("colorTheme", appearance.colorTheme.name))
@@ -616,6 +635,10 @@ private fun SavedBook.toJson(includeChapters: Boolean): JSONObject {
         .put("lastUpdated", lastUpdated)
         .put("addedAt", addedAt)
         .put("userRating", userRating ?: JSONObject.NULL)
+        .put("alerts", JSONObject()
+            .put("notify", alerts.notify)
+            .put("notifyLocked", alerts.notifyLocked)
+            .put("autoDownload", alerts.autoDownload))
         .put("readerTextAlign", readerTextAlign.name)
         .put("chapterSortOrder", chapterSortOrder.name)
         .put("totalChapters", chapters.size)

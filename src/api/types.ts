@@ -144,6 +144,8 @@ export interface SavedBook {
   resumeChapterUrl: string | null;
   position: ReadPosition | null;
   chapters?: Chapter[];
+  /** Per-novel new-chapter settings. */
+  alerts: NewChapterAlerts;
 }
 
 export type ReaderPage =
@@ -232,8 +234,11 @@ export interface UpdateIssue {
 export interface LibraryUpdateProgress {
   done: number;
   total: number;
+  /** The novel being checked, or downloaded when `downloading`. */
   current: string | null;
   categoryId: number | null;
+  /** After the refresh: done/total count chapters downloaded automatically. */
+  downloading: boolean;
 }
 
 export interface LibraryUpdateSummary {
@@ -256,6 +261,21 @@ export interface LibraryUpdateSettings {
   intervalHours: number;
   concurrency: number;
   skipCompleted: boolean;
+}
+
+export interface NewChapterAlerts {
+  notify: boolean;
+  notifyLocked: boolean;
+  autoDownload: boolean;
+}
+
+export interface ChapterAlert {
+  id: number;
+  sourceId: string;
+  novelUrl: string;
+  title: string;
+  readable: number;
+  locked: number;
 }
 
 export interface AutoBackupSettings {
@@ -335,6 +355,7 @@ export interface ReaderState {
   autoBackup: AutoBackupSettings;
   lastAutoBackup: AutoBackupStatus | null;
   autoBackupRunning: boolean;
+  chapterAlerts: ChapterAlert[];
 }
 
 export interface DaemonSnapshot {

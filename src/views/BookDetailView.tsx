@@ -25,6 +25,7 @@ import { coverUrl, rpc } from "../api/client";
 import { renderRichText } from "../utils/safeHtml";
 import { HeaderBar } from "../components/HeaderBar";
 import { SearchPill } from "../components/SearchPill";
+import { NewChapterAlertsButton } from "../components/NewChapterAlertsButton";
 
 const CHAPTER_SORTS: { id: ChapterSort; label: string }[] = [
   { id: "NUMBER_ASC", label: "Chapter # ↑" },
@@ -321,6 +322,8 @@ export function BookDetailView({
                   <Bookmark className={`h-3.5 w-3.5 ${book.favorite ? "fill-current" : ""}`} />
                   {book.favorite ? "In library" : "Add to library"}
                 </button>
+
+                {book.favorite && <NewChapterAlertsButton book={book} />}
 
                 {/* Category pill */}
                 {state.categories.length > 0 && (

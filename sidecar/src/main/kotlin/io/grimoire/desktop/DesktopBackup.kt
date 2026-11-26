@@ -38,6 +38,7 @@ internal data class BackupNovel(
     val readerTextAlign: ReaderTextAlign,
     val chapterSortOrder: ChapterSort,
     val overrides: NovelOverrides,
+    val alerts: NewChapterAlerts = NewChapterAlerts(),
 )
 
 internal data class BackupCategory(val name: String, val order: Int, val isDefault: Boolean, val isHidden: Boolean)
@@ -107,6 +108,11 @@ private fun decodeBackupNovel(n: JSONObject): BackupNovel {
         lastReadAt = n.optLong("lastReadAt", 0L),
         lastUpdated = n.optLong("lastUpdated", 0L),
         userRating = n.optNullableInt("userRating")?.coerceIn(1, 10),
+        alerts = NewChapterAlerts(
+            notify = n.optBoolean("notifyOnNewChapters", false),
+            notifyLocked = n.optBoolean("notifyOnNewLockedChapters", false),
+            autoDownload = n.optBoolean("autoDownloadNewChapters", false),
+        ),
         readerTextAlign = ReaderTextAlign.entries.getOrElse(n.optInt("readerTextAlign", 0)) { ReaderTextAlign.AUTO },
         chapterSortOrder = ChapterSort.entries.getOrElse(n.optInt("chapterSortOrder", 0)) { ChapterSort.NUMBER_ASC },
         overrides = NovelOverrides(
@@ -181,6 +187,9 @@ private fun encodeBackupNovel(book: SavedBook, categoryName: String?): JSONObjec
         .put("categoryName", categoryName ?: JSONObject.NULL)
         .put("lastReadAt", book.lastReadAt)
         .put("userRating", book.userRating ?: JSONObject.NULL)
+        .put("notifyOnNewChapters", book.alerts.notify)
+        .put("notifyOnNewLockedChapters", book.alerts.notifyLocked)
+        .put("autoDownloadNewChapters", book.alerts.autoDownload)
         .put("language", n.language.displayName)
         .put("readerTextAlign", book.readerTextAlign.ordinal)
         .put("customCoverUrl", o.customCoverUrl ?: JSONObject.NULL)

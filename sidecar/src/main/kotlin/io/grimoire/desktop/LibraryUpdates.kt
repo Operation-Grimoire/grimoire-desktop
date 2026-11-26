@@ -112,12 +112,46 @@ data class LibraryUpdateSummary(
     }
 }
 
+/** Android's per-novel "New chapters" settings. */
+data class NewChapterAlerts(
+    /** Notify when a library update finds readable chapters. */
+    val notify: Boolean = false,
+    /** Notify about new chapters that are locked (paid or not yet released). */
+    val notifyLocked: Boolean = false,
+    /** Download new readable chapters after a library update. */
+    val autoDownload: Boolean = false,
+) {
+    val any: Boolean get() = notify || notifyLocked || autoDownload
+
+    infix fun or(other: NewChapterAlerts) = NewChapterAlerts(
+        notify || other.notify, notifyLocked || other.notifyLocked, autoDownload || other.autoDownload,
+    )
+}
+
+/** A notification waiting for the window to show it; [readable] and [locked] count only what the novel asked about. */
+data class ChapterAlert(val id: Long, val key: NovelKey, val title: String, val readable: Int, val locked: Int)
+
+/** What a library update found for one novel, by its [alerts]: what to announce, and what to download. */
+internal data class NewChapterPlan(val readable: Int, val locked: Int, val download: List<String>)
+
+internal fun planNewChapters(alerts: NewChapterAlerts, found: List<Chapter>): NewChapterPlan {
+    val readable = found.filterNot { it.locked }
+    return NewChapterPlan(
+        readable = if (alerts.notify) readable.size else 0,
+        locked = if (alerts.notifyLocked) found.size - readable.size else 0,
+        download = if (alerts.autoDownload) readable.map { it.url } else emptyList(),
+    )
+}
+
 /** Live progress of the running refresh; `null` in state when idle. */
 data class LibraryUpdateProgress(
     val done: Int,
     val total: Int,
+    /** The novel being checked, or downloaded when [downloading]. */
     val current: String?,
     val categoryId: Long?,
+    /** After the refresh: [done] and [total] count chapters downloaded automatically. */
+    val downloading: Boolean = false,
 )
 
 internal const val ISSUE_NO_CHAPTERS = "Source returned no chapters — kept the existing list"
@@ -187,7 +221,12 @@ internal sealed interface RefreshOutcome {
     val newChapters: Int get() = 0
 
     /** [warning] is the issue recorded for a library novel, or what a manual refresh reports. */
-    data class Updated(override val newChapters: Int, val warning: String? = null) : RefreshOutcome {
+    data class Updated(
+        override val newChapters: Int,
+        val warning: String? = null,
+        /** The chapters behind [newChapters], for alerts and automatic downloads; empty when not logged. */
+        val found: List<Chapter> = emptyList(),
+    ) : RefreshOutcome {
         val warned: Boolean get() = warning != null
     }
     data object Failed : RefreshOutcome

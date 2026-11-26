@@ -41,6 +41,7 @@ data class SavedBook(
     val readChapters: Set<String> = emptySet(),
     /** Restored from a backup that lists only chapters with reading state; the next refresh completes it. */
     val chaptersIncomplete: Boolean = false,
+    val alerts: NewChapterAlerts = NewChapterAlerts(),
 ) {
     /** Effective novel metadata with user overrides winning over source fields. */
     fun effectiveNovel(): Novel = novel.copy(
@@ -147,6 +148,7 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
             chapterSortOrder = old?.chapterSortOrder ?: ChapterSort.NUMBER_ASC,
             overrides = old?.overrides ?: NovelOverrides(),
             chaptersIncomplete = chaptersIncomplete,
+            alerts = old?.alerts ?: NewChapterAlerts(),
         )
         db.execute("INSERT INTO books VALUES(?,?,?) ON CONFLICT(source_id,novel_url) DO UPDATE SET metadata=excluded.metadata",
             key.sourceId, key.url, encodeBook(metadata).apply { remove("downloaded") }.toString())
@@ -222,7 +224,7 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
                     }
                     val warning = ISSUE_REGRESSION.takeIf { regressed }
                     report(warning)
-                    RefreshOutcome.Updated(found.size, warning)
+                    RefreshOutcome.Updated(found.size, warning, found.map { it.chapter })
                 }
             }
         }.also { book(key) }
@@ -381,6 +383,8 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
                 ),
                 // A novel this computer already fetched keeps its full list.
                 chaptersIncomplete = old == null || old.chapters.isEmpty() || old.chaptersIncomplete,
+                // Android's restore merge: a setting on either side stays on.
+                alerts = entry.alerts or (old?.alerts ?: NewChapterAlerts()),
             )
             db.execute("INSERT INTO books VALUES(?,?,?) ON CONFLICT(source_id,novel_url) DO UPDATE SET metadata=excluded.metadata",
                 key.sourceId, key.url, encodeBook(merged).apply { remove("downloaded") }.toString())
