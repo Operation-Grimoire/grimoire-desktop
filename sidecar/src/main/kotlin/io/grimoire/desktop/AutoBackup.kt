@@ -52,10 +52,12 @@ data class AutoBackupStatus(
     val success: Boolean,
     val message: String,
     val fileName: String? = null,
+    /** Nothing was written (an empty library); checked again soon rather than after a full interval. */
+    val skipped: Boolean = false,
 ) {
     fun encode(): String = JSONObject()
         .put("at", at).put("success", success).put("message", message)
-        .put("fileName", fileName ?: JSONObject.NULL).toString()
+        .put("fileName", fileName ?: JSONObject.NULL).put("skipped", skipped).toString()
 
     companion object {
         fun decode(text: String?): AutoBackupStatus? {
@@ -63,6 +65,7 @@ data class AutoBackupStatus(
             return AutoBackupStatus(
                 root.optLong("at", 0L), root.optBoolean("success", false), root.optString("message", ""),
                 if (root.isNull("fileName")) null else root.optString("fileName"),
+                root.optBoolean("skipped", false),
             )
         }
     }
@@ -73,7 +76,7 @@ internal fun nextAutoBackupAt(settings: AutoBackupSettings, last: AutoBackupStat
     if (!settings.enabled || settings.folder.isBlank()) return null
     if (last == null) return 0L
     val interval = settings.intervalHours * 3_600_000L
-    return last.at + if (last.success) interval else minOf(interval, AUTO_BACKUP_RETRY_MS)
+    return last.at + if (last.success && !last.skipped) interval else minOf(interval, AUTO_BACKUP_RETRY_MS)
 }
 
 internal fun autoBackupFileName(now: LocalDateTime = LocalDateTime.now(), id: UUID = UUID.randomUUID()): String =

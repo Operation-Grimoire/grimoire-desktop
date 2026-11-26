@@ -947,14 +947,14 @@ class ReaderModel(
             val books = library.allBooks()
             // An empty backup would only push older, useful ones out of the rotation.
             if (books.none { it.favorite || it.readChapters.isNotEmpty() }) {
-                return AutoBackupStatus(now, true, "Nothing to back up yet")
+                return AutoBackupStatus(now, true, "Nothing to back up yet", skipped = true)
             }
             val name = autoBackupFileName()
             val path = folder.resolve(name)
-            val count = writeLibraryBackup(path)
-            // Record ownership before pruning, so only files this app wrote are ever deleted.
-            val owned = library.ownedAutoBackups() + name
+            // Owned before the file exists, so even an interrupted write is pruned later.
+            val owned = library.ownedAutoBackups().plus(name).toList().takeLast(OWNED_AUTO_BACKUP_LIMIT).toSet()
             library.setOwnedAutoBackups(owned)
+            val count = writeLibraryBackup(path)
             val removed = autoBackupsToDelete(folder, owned, path)
                 .filter { runCatching { Files.deleteIfExists(it) }.getOrDefault(false) }
                 .mapTo(HashSet()) { it.fileName.toString() }
@@ -1332,17 +1332,21 @@ class ReaderModel(
         // Extension network calls may not be cancellable; never let one hold up shutdown for long.
         updaterScope.coroutineContext.job.children.forEach { it.cancel() }
         withTimeoutOrNull(UPDATER_SHUTDOWN_MS) { updaterScope.coroutineContext.job.children.toList().joinAll() }
+        var heldBackup = false
         try {
             // Let the claimed operation finish, then save before cancelling the usable scope.
             scope.coroutineContext.job.children.toList().joinAll()
             lastHistoryOpen?.join()
             settingsScope.coroutineContext.job.children.toList().joinAll()
+            // A backup file write ignores cancellation; let it finish before the store closes.
+            heldBackup = withTimeoutOrNull(BACKUP_SHUTDOWN_MS) { backupLock.lock(); true } == true
             withContext(Dispatchers.IO) {
                 if (!storageClosed.get()) {
                     checkpoints.retire(); flushStoredPositions(); library.close(); storageClosed.set(true)
                 }
             }
         } catch (failure: Exception) {
+            if (heldBackup) backupLock.unlock()
             synchronized(operationLock) { closing.set(false); state.value.checkpointLoad?.let(checkpoints::resume) }
             throw failure
         }
@@ -1408,6 +1412,9 @@ class ReaderModel(
 
 private const val LAUNCH_UPDATE_DELAY_MS = 8_000L
 private const val LAUNCH_BACKUP_DELAY_MS = 20_000L
+private const val BACKUP_SHUTDOWN_MS = 30_000L
+/** Plenty for seven per folder across many folders; the oldest names drop off. */
+private const val OWNED_AUTO_BACKUP_LIMIT = 200
 
 /** Android's id for imported EPUB/TXT books. */
 private const val ANDROID_LOCAL_SOURCE_ID = 0L

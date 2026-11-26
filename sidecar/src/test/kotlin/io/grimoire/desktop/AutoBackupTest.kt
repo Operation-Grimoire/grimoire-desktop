@@ -52,6 +52,8 @@ class AutoBackupTest {
         assertEquals(1_000L + 24 * 3_600_000L, nextAutoBackupAt(settings, AutoBackupStatus(1_000L, true, "ok")))
         // A failure retries within the hour instead of waiting a whole day.
         assertEquals(1_000L + AUTO_BACKUP_RETRY_MS, nextAutoBackupAt(settings, AutoBackupStatus(1_000L, false, "no")))
+        // An empty library is checked again soon, so the first novel gets backed up promptly.
+        assertEquals(1_000L + AUTO_BACKUP_RETRY_MS, nextAutoBackupAt(settings, AutoBackupStatus(1_000L, true, "none", skipped = true)))
     }
 
     @Test
@@ -61,7 +63,7 @@ class AutoBackupTest {
             val settings = AutoBackupSettings(enabled = true, folder = "D:\\Backups", intervalHours = 72)
             lib.setAutoBackupSettings(settings)
             assertEquals(settings, lib.autoBackupSettings())
-            val status = AutoBackupStatus(5L, false, "Backup folder not found", null)
+            val status = AutoBackupStatus(5L, true, "Nothing to back up yet", null, skipped = true)
             lib.setLastAutoBackup(status)
             assertEquals(status, lib.lastAutoBackup())
             lib.setOwnedAutoBackups(listOf("a", "b"))
