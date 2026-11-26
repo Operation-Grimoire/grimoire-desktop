@@ -1,8 +1,12 @@
 import React from "react";
 
-/** Tags with a rendering below; anything else is unwrapped to its text. */
+/**
+ * Tags with a rendering below; anything else is unwrapped to its text. Attributes must be
+ * name=value pairs, so a bracketed title such as "<A Will Eternal>" is not taken for a tag.
+ */
 const TAG_PATTERN =
-  "\\/?(?:br|p|div|span|i|em|b|strong|u|s|del|strike|sub|sup|code|blockquote|a)(?:\\s[^<>]*)?\\/?>";
+  /\/?(?:br|p|div|span|i|em|b|strong|u|s|del|strike|sub|sup|code|blockquote|a)(?:\s+[\w:-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'<>=`]+))*\s*\/?>/
+    .source;
 const KNOWN_TAG = new RegExp(`<${TAG_PATTERN}`, "i");
 const STRAY_OPEN = new RegExp(`<(?!${TAG_PATTERN})`, "gi");
 
