@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::oneshot;
 
 #[cfg(target_os = "windows")]
@@ -35,9 +35,10 @@ pub struct SidecarManager {
 
 impl SidecarManager {
     pub fn spawn(app: AppHandle) -> Result<Arc<Self>, String> {
-        let lib_dir = resolve_sidecar_lib_dir()?;
+        let resource_dir = app.path().resource_dir().ok();
+        let lib_dir = resolve_sidecar_lib_dir(resource_dir.as_ref())?;
         let classpath = format!("{}/*", lib_dir.to_string_lossy());
-        let java_bin = std::env::var("GRIMOIRE_JAVA_BIN").unwrap_or_else(|_| "java".to_string());
+        let java_bin = resolve_java_bin(resource_dir.as_ref());
 
         let mut cmd = Command::new(&java_bin);
         cmd.arg("-cp")
@@ -59,7 +60,7 @@ impl SidecarManager {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("Failed to start JVM sidecar ({java_bin}): {e}"))?;
+            .map_err(|e| format!("Failed to start JVM sidecar ({}): {e}", java_bin.display()))?;
 
         let stdin = child.stdin.take().ok_or("Missing sidecar stdin")?;
         let stdout = child.stdout.take().ok_or("Missing sidecar stdout")?;
@@ -135,7 +136,6 @@ impl SidecarManager {
                         _ => {}
                     }
                 }
-                // Drain any pending calls if the sidecar exits unexpectedly.
                 if let Ok(mut pending) = reader_mgr.pending.lock() {
                     for (_, tx) in pending.drain() {
                         let _ = tx.send(Err("Sidecar process exited".into()));
@@ -206,7 +206,37 @@ impl SidecarManager {
     }
 }
 
-fn resolve_sidecar_lib_dir() -> Result<PathBuf, String> {
+fn resolve_java_bin(resource_dir: Option<&PathBuf>) -> PathBuf {
+    if let Ok(custom) = std::env::var("GRIMOIRE_JAVA_BIN") {
+        if !custom.trim().is_empty() {
+            return PathBuf::from(custom);
+        }
+    }
+    let exe_name = if cfg!(target_os = "windows") {
+        "java.exe"
+    } else {
+        "java"
+    };
+    let mut candidates = Vec::new();
+    if let Some(res) = resource_dir {
+        candidates.push(res.join("resources").join("jre").join("bin").join(exe_name));
+        candidates.push(res.join("jre").join("bin").join(exe_name));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("resources").join("jre").join("bin").join(exe_name));
+            candidates.push(dir.join("jre").join("bin").join(exe_name));
+        }
+    }
+    for candidate in candidates {
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    PathBuf::from(exe_name)
+}
+
+fn resolve_sidecar_lib_dir(resource_dir: Option<&PathBuf>) -> Result<PathBuf, String> {
     if let Ok(custom) = std::env::var("GRIMOIRE_SIDECAR_LIB") {
         let p = PathBuf::from(custom);
         if p.is_dir() {
@@ -214,11 +244,14 @@ fn resolve_sidecar_lib_dir() -> Result<PathBuf, String> {
         }
     }
     let mut candidates = Vec::new();
+    if let Some(res) = resource_dir {
+        candidates.push(res.join("resources").join("sidecar").join("lib"));
+        candidates.push(res.join("sidecar").join("lib"));
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("sidecar").join("lib"));
             candidates.push(dir.join("resources").join("sidecar").join("lib"));
-            // Dev mode: target/debug/grimoire-desktop -> ../../.. -> repo root
+            candidates.push(dir.join("sidecar").join("lib"));
             for ancestor in dir.ancestors().take(5) {
                 candidates.push(
                     ancestor
