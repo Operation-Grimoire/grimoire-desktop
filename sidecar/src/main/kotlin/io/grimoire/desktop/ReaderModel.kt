@@ -1346,9 +1346,11 @@ class ReaderModel(
                 }
             }
         } catch (failure: Exception) {
-            if (heldBackup) backupLock.unlock()
             synchronized(operationLock) { closing.set(false); state.value.checkpointLoad?.let(checkpoints::resume) }
             throw failure
+        } finally {
+            // Closing is set, so no backup starts after this; a repeated close must not wait on it.
+            if (heldBackup) backupLock.unlock()
         }
         scope.coroutineContext.job.cancelAndJoin()
         updaterScope.coroutineContext.job.cancel()
