@@ -18,6 +18,45 @@ export type ColorTheme =
   | "ROSE"
   | "MIDNIGHT";
 export type BrowseMode = "POPULAR" | "LATEST" | "SEARCH";
+
+export type FilterKind =
+  | "HEADER"
+  | "SEPARATOR"
+  | "TEXT"
+  | "CHECKBOX"
+  | "TRISTATE"
+  | "SELECT"
+  | "GROUP"
+  | "SORT"
+  | "UNSUPPORTED";
+
+export interface SortValue {
+  index: number;
+  ascending: boolean;
+}
+
+/** string (TEXT), boolean (CHECKBOX), number (TRISTATE 0 ignore / 1 include / 2 exclude, SELECT index), SortValue or null (SORT). */
+export type FilterState = string | boolean | number | SortValue | null;
+
+export interface FilterEntry {
+  kind: FilterKind;
+  name: string;
+  state: FilterState;
+  default: FilterState;
+  values: string[];
+  children: FilterEntry[];
+}
+
+export interface BrowseFilters {
+  status: "READY" | "NEEDS_LOAD" | "LOADING" | "LOADED" | "ERROR";
+  error: string | null;
+  /** The listing shows filtered search results. */
+  applied: boolean;
+  activeCount: number;
+  /** The source combines a typed query with filters. */
+  searchWithFilters: boolean;
+  entries: FilterEntry[];
+}
 export type ReaderFont = "DEFAULT" | "SERIF" | "MONOSPACE";
 export type ReaderColorTheme = "LIGHT" | "SEPIA" | "DARK" | "BLACK";
 export type ReaderTextAlign = "AUTO" | "LEFT" | "RIGHT" | "CENTER" | "JUSTIFY";
@@ -268,6 +307,7 @@ export interface ReaderState {
   browseQuery: string;
   browsePage: number;
   browseHasMore: boolean;
+  browseFilters: BrowseFilters | null;
   extensionNotice: string | null;
   localExtension: string | null;
   /** Progress or result of the last backup or restore. */

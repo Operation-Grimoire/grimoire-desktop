@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { Compass, Flame, Clock, Search, Puzzle, WifiOff, ChevronDown } from "lucide-react";
+import { Compass, Flame, Clock, Search, Puzzle, WifiOff, ChevronDown, SlidersHorizontal, X } from "lucide-react";
 import type { BrowseMode, ReaderState } from "../api/types";
 import { coverUrl, rpc } from "../api/client";
 import { HeaderBar } from "../components/HeaderBar";
 import { SearchPill } from "../components/SearchPill";
 import { CoverCard } from "../components/CoverCard";
 import { EmptyState } from "../components/EmptyState";
+import { FilterDrawer } from "../components/FilterDrawer";
 
 const MODE_META: Record<BrowseMode, { label: string; icon: typeof Flame }> = {
   POPULAR: { label: "Popular", icon: Flame },
@@ -21,6 +22,14 @@ export function BrowseView({
   coverBaseUrl: string | null;
 }) {
   const [queryInput, setQueryInput] = useState(state.browseQuery);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filters = state.browseModes.includes("SEARCH") ? state.browseFilters : null;
+  const filtered = filters?.applied === true && state.browseMode === "SEARCH";
+
+  // Another source brings its own filters; never show the previous source's panel.
+  useEffect(() => {
+    setFiltersOpen(false);
+  }, [state.browseSource]);
 
   useEffect(() => {
     setQueryInput(state.browseQuery);
@@ -114,6 +123,40 @@ export function BrowseView({
               })}
             </div>
 
+            {filters && (
+              <div className="inline-flex items-center">
+                <button
+                  type="button"
+                  onClick={() => setFiltersOpen(true)}
+                  aria-pressed={filtered}
+                  className={`flex h-8 items-center gap-1.5 border px-3 text-[12.5px] font-medium transition-colors ${
+                    filtered
+                      ? "rounded-l-full border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
+                      : "rounded-full border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                  }`}
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  Filters
+                  {filtered && filters.activeCount > 0 && (
+                    <span className="rounded-full bg-[var(--accent)] px-1.5 text-[10.5px] font-semibold text-[var(--accent-fg)]">
+                      {filters.activeCount}
+                    </span>
+                  )}
+                </button>
+                {filtered && (
+                  <button
+                    type="button"
+                    aria-label="Clear filters"
+                    disabled={state.busy}
+                    onClick={() => rpc("clearFilters")}
+                    className="flex h-8 items-center rounded-r-full border border-l-0 border-[var(--accent)] bg-[var(--accent-soft)] px-2 text-[var(--accent)] transition-opacity hover:opacity-80 disabled:opacity-50"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
+
             {state.browseMode === "SEARCH" && (
               <div className="flex flex-1 items-center gap-2 max-w-[440px]">
                 <SearchPill
@@ -141,17 +184,21 @@ export function BrowseView({
               <EmptyState
                 icon={Compass}
                 title={
-                  state.browseMode === "SEARCH" && !state.browseQuery
+                  state.browseMode === "SEARCH" && !state.browseQuery && !filtered
                     ? `Search ${state.sourceName}`
                     : "No titles found"
                 }
                 subtitle={
-                  state.browseMode === "SEARCH" && !state.browseQuery
-                    ? "Enter a title above and press Enter."
-                    : "Try switching listings or adjusting your search query."
+                  state.browseMode === "SEARCH" && !state.browseQuery && !filtered
+                    ? filters
+                      ? "Enter a title above, or open Filters."
+                      : "Enter a title above and press Enter."
+                    : filtered
+                      ? "Try different filters."
+                      : "Try switching listings or adjusting your search query."
                 }
-                actionLabel={state.browseMode !== "SEARCH" ? "Retry" : undefined}
-                onAction={state.browseMode !== "SEARCH" ? () => rpc("browse") : undefined}
+                actionLabel={state.browseMode !== "SEARCH" || filtered ? "Retry" : undefined}
+                onAction={state.browseMode !== "SEARCH" || filtered ? () => rpc("browse") : undefined}
               />
             ) : (
               <>
@@ -182,6 +229,14 @@ export function BrowseView({
             )}
           </div>
         </div>
+      )}
+      {filtersOpen && filters && (
+        <FilterDrawer
+          filters={filters}
+          query={state.browseQuery}
+          busy={state.busy}
+          onClose={() => setFiltersOpen(false)}
+        />
       )}
     </div>
   );

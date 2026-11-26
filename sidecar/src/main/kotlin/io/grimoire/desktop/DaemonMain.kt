@@ -252,6 +252,9 @@ private fun dispatchMethod(method: String, params: JSONObject, model: ReaderMode
         "selectSource" -> model.selectSource(params.sourceId())
         "setBrowseMode" -> model.setBrowseMode(BrowseMode.valueOf(params.getString("mode")))
         "search" -> model.search(params.getString("query"))
+        "loadFilterOptions" -> model.loadFilterOptions()
+        "clearFilters" -> model.clearFilters()
+        "applyFilters" -> model.applyFilters(filterInputs(params.getJSONArray("filters")), params.optString("query", ""))
         "offline" -> model.offline(params.getBoolean("offline"))
         "setHistoryRecording" -> model.setHistoryRecording(params.getBoolean("enabled"))
         "removeHistory" -> model.removeHistory(params.getLong("id"))
@@ -358,6 +361,15 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
     .put("browseQuery", browseQuery)
     .put("browsePage", browsePage)
     .put("browseHasMore", browseHasMore)
+    .put("browseFilters", browseFilters?.let { panel ->
+        JSONObject()
+            .put("status", panel.status.name)
+            .put("error", panel.error ?: JSONObject.NULL)
+            .put("applied", panel.applied)
+            .put("activeCount", activeFilterCount(panel.entries))
+            .put("searchWithFilters", panel.searchWithFilters)
+            .put("entries", filterEntriesJson(panel.entries))
+    } ?: JSONObject.NULL)
     .put("extensionNotice", extensionNotice ?: JSONObject.NULL)
     .put("localExtension", localExtension ?: JSONObject.NULL)
     .put("backupNotice", backupNotice ?: JSONObject.NULL)
@@ -526,6 +538,35 @@ private fun ReaderState.updatesJson(): JSONArray {
 private fun JSONObject.sourceId(): Long = when (val value = get("sourceId")) {
     is Number -> value.toLong()
     else -> value.toString().toLong()
+}
+
+private fun filterStateJson(state: Any?): Any = when (state) {
+    null -> JSONObject.NULL
+    is SortValue -> JSONObject().put("index", state.index).put("ascending", state.ascending)
+    else -> state
+}
+
+private fun filterEntriesJson(entries: List<FilterEntry>): JSONArray = JSONArray(entries.map { e ->
+    JSONObject()
+        .put("kind", e.kind.name)
+        .put("name", e.name)
+        .put("state", filterStateJson(e.state))
+        .put("default", filterStateJson(e.default))
+        .put("values", JSONArray(e.values))
+        .put("children", filterEntriesJson(e.children))
+})
+
+/** The UI's filter states, shaped like the published entries. */
+private fun filterInputs(array: JSONArray): List<FilterInput> = (0 until array.length()).map { i ->
+    val item = array.optJSONObject(i) ?: JSONObject()
+    val state: Any? = when (val raw = item.opt("state")) {
+        null, JSONObject.NULL -> null
+        is JSONObject -> SortValue(raw.getInt("index"), raw.optBoolean("ascending", true))
+        is Number -> raw.toInt()
+        is Boolean, is String -> raw
+        else -> null
+    }
+    FilterInput(state, item.optJSONArray("children")?.let(::filterInputs).orEmpty())
 }
 
 private fun JSONObject.longs(name: String): List<Long> =
