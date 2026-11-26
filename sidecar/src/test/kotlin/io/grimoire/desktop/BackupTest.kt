@@ -132,6 +132,27 @@ class BackupTest {
     }
 
     @Test
+    fun truncatedFirstRefreshKeepsRestoredReadState() = runBlocking {
+        val dir = temp.newFolder().toPath()
+        LocalLibrary(dir.resolve("lib")).use { lib ->
+            // 30 restored read chapters; the throttled source then returns only 5 of them.
+            val restored = chapters(30)
+            val entry = readBackup(androidBackup(dir)).novels.first().copy(
+                chapters = restored, readChapters = restored.mapTo(HashSet()) { it.url })
+            lib.importBackupNovel(entry, null, now = 1L)
+            val facade = ReadingStateFacade(DesktopReadingStateDao(lib), backfill = null)
+            entry.readChapters.forEach { url ->
+                facade.prepareExplicit(ReadingCompletionInput.MarkRead(ChapterKey(key, url), 10L))?.let { facade.submit(it) }
+            }
+            val outcome = lib.applyRefresh(key, novel(), chapters(5), requireFavorite = true, now = 2L)
+            assertEquals(RefreshOutcome.Updated(0, ISSUE_CHAPTER_LIST_CHANGED), outcome)
+            val after = lib.book(key)!!
+            assertEquals(30, after.readChapters.size)
+            assertTrue("a later refresh must still complete the list", after.chaptersIncomplete)
+        }
+    }
+
+    @Test
     fun desktopBackupRoundTripsReadStateAndMetadata() = runBlocking {
         val dir = temp.newFolder().toPath()
         val file = dir.resolve("out/grimoire_backup.json.gz")

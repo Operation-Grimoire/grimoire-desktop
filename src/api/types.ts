@@ -207,6 +207,8 @@ export interface LibraryUpdateSummary {
   failed: boolean;
   /** Null for a whole-library run. */
   categoryId: number | null;
+  /** Covered only chosen novels, such as those restored from a backup. */
+  targeted: boolean;
 }
 
 export interface LibraryUpdateSettings {

@@ -232,7 +232,12 @@ function LibraryUpdatesSection({ state }: { state: ReaderState }) {
       {state.lastLibraryUpdate && (
         <div className="mt-2.5 flex items-center gap-1.5 text-[12px] text-[var(--text-muted)]">
           <RefreshCw className="h-3 w-3" />
-          Last update{state.lastLibraryUpdate.categoryId != null ? " (one category)" : ""}{" "}
+          Last update
+          {state.lastLibraryUpdate.targeted
+            ? " (restored novels)"
+            : state.lastLibraryUpdate.categoryId != null
+              ? " (one category)"
+              : ""}{" "}
           {new Date(state.lastLibraryUpdate.finishedAt).toLocaleString()} ·{" "}
           {state.lastLibraryUpdate.newChapters} new
           {state.lastLibraryUpdate.errors > 0 ? ` · ${state.lastLibraryUpdate.errors} failed` : ""}

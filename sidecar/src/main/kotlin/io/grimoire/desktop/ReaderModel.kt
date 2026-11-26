@@ -639,12 +639,22 @@ class ReaderModel(
         }
     }
 
-    /** Refreshes [keys] only, regardless of the skip-completed setting; never moves the schedule. */
-    private fun updateBooks(keys: Set<NovelKey>) {
+    /**
+     * Refreshes [keys] only, regardless of the skip-completed setting; never moves the schedule.
+     * Waits for a running update, whose targets were chosen before these novels existed.
+     * Returns false when nothing will run (offline, closing or no keys).
+     */
+    private fun updateBooks(keys: Set<NovelKey>): Boolean {
         synchronized(operationLock) {
-            if (closing.get() || keys.isEmpty() || state.value.offline || libraryUpdateJob?.isActive == true) return
+            if (closing.get() || keys.isEmpty() || state.value.offline) return false
+            val running = libraryUpdateJob?.takeIf { it.isActive }
+            if (running != null) {
+                updaterScope.launch { running.join(); updateBooks(keys) }
+                return true
+            }
             mutable.update { it.copy(libraryUpdate = LibraryUpdateProgress(0, 0, null, null)) }
             libraryUpdateJob = updaterScope.launch { runLibraryUpdate(null, keys) }
+            return true
         }
     }
 
@@ -703,7 +713,8 @@ class ReaderModel(
             mutable.update { it.copy(error = "Library update failed: ${failure.message ?: failure.javaClass.simpleName}") }
         } finally {
             val summary = LibraryUpdateSummary(System.currentTimeMillis(), checked.get(), found.get(), warnings.get(),
-                errors.get(), cancelled = !finished && !failed, failed = failed, categoryId = categoryId)
+                errors.get(), cancelled = !finished && !failed, failed = failed, categoryId = categoryId,
+                targeted = only != null)
             if (!closing.get()) withContext(NonCancellable) {
                 runCatching { library.setLastLibraryUpdate(summary) }
                 // Only a completed whole-library run moves the schedule.
@@ -838,7 +849,11 @@ class ReaderModel(
 
     /** Writes an Android-compatible backup of the library and reading state to [path]. */
     fun createBackup(path: Path) = operate {
-        mutable.update { it.copy(backupNotice = null) }
+        mutable.update { it.copy(backupNotice = "Writing ${path.fileName}…") }
+        reportBackupFailure("Backup failed") { writeLibraryBackup(path) }
+    }
+
+    private fun writeLibraryBackup(path: Path) {
         val books = library.allBooks()
         writeBackup(path, books, library.categories(), extensions?.repositoryViews().orEmpty(),
             System.getProperty("grimoire.version") ?: "dev", System.currentTimeMillis())
@@ -853,6 +868,23 @@ class ReaderModel(
      */
     fun restoreBackup(path: Path) = operate {
         mutable.update { it.copy(backupNotice = "Reading ${path.fileName}…") }
+        reportBackupFailure("Restore failed") { restoreLibraryBackup(path) }
+    }
+
+    /** A failure replaces the progress notice, so it never looks like work is still running. */
+    private suspend fun reportBackupFailure(prefix: String, action: suspend () -> Unit) {
+        try {
+            action()
+        } catch (cancelled: CancellationException) {
+            mutable.update { it.copy(backupNotice = "$prefix: cancelled") }
+            throw cancelled
+        } catch (failure: Exception) {
+            mutable.update { it.copy(backupNotice = "$prefix: ${failure.message ?: failure.javaClass.simpleName}") }
+            throw failure
+        }
+    }
+
+    private suspend fun restoreLibraryBackup(path: Path) {
         val contents = readBackup(path)
         val now = System.currentTimeMillis()
         val defaults = contents.categories.filter { it.isDefault }.mapTo(HashSet()) { it.name }
@@ -895,13 +927,14 @@ class ReaderModel(
             val repos = contents.repositories.map { it.indexUrl }.toSet() -
                 extensions?.repositoryViews().orEmpty().map { it.indexUrl }.toSet()
             if (repos.isNotEmpty()) add("${plural(repos.size, "repository")} not added — desktop needs each repository's signing key: ${repos.joinToString()}")
-            if (incomplete.isNotEmpty()) add(
-                if (state.value.offline) "Go online and update the library to fetch full chapter lists"
-                else "Fetching full chapter lists for ${plural(incomplete.size, "novel")}…",
-            )
         }
-        mutable.update { it.copy(backupNotice = notes.joinToString(".\n") + ".") }
-        updateBooks(incomplete)
+        val fetching = updateBooks(incomplete)
+        val lists = when {
+            incomplete.isEmpty() -> null
+            fetching -> "Fetching full chapter lists for ${plural(incomplete.size, "novel")}…"
+            else -> "Go online and update the library to fetch full chapter lists"
+        }
+        mutable.update { it.copy(backupNotice = (notes + listOfNotNull(lists)).joinToString(".\n") + ".") }
     }
 
     /** Short store writes that must not wait behind, or block, a running operation. */

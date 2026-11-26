@@ -91,10 +91,13 @@ data class LibraryUpdateSummary(
     val failed: Boolean = false,
     /** Null for a whole-library run. */
     val categoryId: Long? = null,
+    /** Covered only chosen novels, such as those restored from a backup. */
+    val targeted: Boolean = false,
 ) {
     fun encode(): String = JSONObject().put("finishedAt", finishedAt).put("checked", checked)
         .put("newChapters", newChapters).put("warnings", warnings).put("errors", errors)
-        .put("cancelled", cancelled).put("failed", failed).put("categoryId", categoryId ?: JSONObject.NULL).toString()
+        .put("cancelled", cancelled).put("failed", failed).put("categoryId", categoryId ?: JSONObject.NULL)
+        .put("targeted", targeted).toString()
 
     companion object {
         fun decode(text: String?): LibraryUpdateSummary? = text?.let {
@@ -102,7 +105,8 @@ data class LibraryUpdateSummary(
                 val r = JSONObject(it)
                 LibraryUpdateSummary(r.getLong("finishedAt"), r.getInt("checked"), r.getInt("newChapters"),
                     r.getInt("warnings"), r.getInt("errors"), r.optBoolean("cancelled", false),
-                    r.optBoolean("failed", false), if (r.isNull("categoryId")) null else r.getLong("categoryId"))
+                    r.optBoolean("failed", false), if (r.isNull("categoryId")) null else r.getLong("categoryId"),
+                    r.optBoolean("targeted", false))
             }.getOrNull()
         }
     }

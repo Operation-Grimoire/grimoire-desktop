@@ -189,8 +189,10 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
                 else db.execute("DELETE FROM update_issues WHERE source_id=? AND novel_url=?", key.sourceId, key.url)
             }
             // A list restored from a backup holds only read chapters; completing it is not news.
-            val plan = if (current.chaptersIncomplete && unique.isNotEmpty()) ChapterRefreshPlan.Apply(emptyList())
-                else planChapterRefresh(current.chapters, unique)
+            // The truncation guard still runs first, so a partial fetch cannot drop restored read state.
+            val plan = planChapterRefresh(current.chapters, unique).let {
+                if (current.chaptersIncomplete && it is ChapterRefreshPlan.Apply) ChapterRefreshPlan.Apply(emptyList()) else it
+            }
             when (plan) {
                 is ChapterRefreshPlan.Keep -> {
                     storeBook(key, current, merged, current.chapters, current.lastUpdated, current.chaptersIncomplete)
