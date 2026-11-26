@@ -219,6 +219,22 @@ export interface LibraryUpdateSettings {
   skipCompleted: boolean;
 }
 
+export interface AutoBackupSettings {
+  enabled: boolean;
+  /** Absolute folder path; empty until one is chosen. */
+  folder: string;
+  intervalHours: number;
+  /** Epoch ms when the next backup is due; 0 means now, null when off. */
+  nextAt: number | null;
+}
+
+export interface AutoBackupStatus {
+  at: number;
+  success: boolean;
+  message: string;
+  fileName: string | null;
+}
+
 export interface DesktopAppearance {
   themeMode: ThemeMode;
   colorTheme: ColorTheme;
@@ -276,6 +292,9 @@ export interface ReaderState {
   libraryUpdate: LibraryUpdateProgress | null;
   lastLibraryUpdate: LibraryUpdateSummary | null;
   libraryUpdateSettings: LibraryUpdateSettings;
+  autoBackup: AutoBackupSettings;
+  lastAutoBackup: AutoBackupStatus | null;
+  autoBackupRunning: boolean;
 }
 
 export interface DaemonSnapshot {
