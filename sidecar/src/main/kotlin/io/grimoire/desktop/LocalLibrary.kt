@@ -17,6 +17,8 @@ import java.util.UUID
 import java.sql.Connection
 import java.sql.ResultSet
 
+internal const val UPDATE_FEED_LIMIT = 500
+
 data class DesktopAppearance(val themeMode: ThemeMode = ThemeMode.SYSTEM, val colorTheme: ColorTheme = ColorTheme.DEFAULT)
 
 data class ReadPosition(val chapterUrl: String, val paragraph: Int, val offset: Int)
@@ -119,40 +121,161 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
     @Synchronized fun remember(key: NovelKey, novel: Novel, chapters: List<Chapter>): SavedBook {
         require(novel.url == key.url && chapters.map { it.url }.distinct().size == chapters.size)
         write(invalidatesPositionEligibility = true) {
-            val old = book(key)
-            val now = System.currentTimeMillis()
-            val metadata = SavedBook(
-                key = key,
-                novel = novel,
-                chapters = chapters,
-                favorite = old?.favorite ?: false,
-                position = old?.position,
-                resumeChapterUrl = old?.resumeChapterUrl,
-                categoryId = old?.categoryId,
-                lastReadAt = old?.lastReadAt ?: 0L,
-                lastUpdated = now,
-                addedAt = old?.addedAt ?: 0L,
-                userRating = old?.userRating,
-                readerTextAlign = old?.readerTextAlign ?: ReaderTextAlign.AUTO,
-                chapterSortOrder = old?.chapterSortOrder ?: ChapterSort.NUMBER_ASC,
-                overrides = old?.overrides ?: NovelOverrides(),
-            )
-            db.execute("INSERT INTO books VALUES(?,?,?) ON CONFLICT(source_id,novel_url) DO UPDATE SET metadata=excluded.metadata",
-                key.sourceId, key.url, encodeBook(metadata).apply { remove("downloaded") }.toString())
-            db.query("SELECT chapter_url FROM reading_states WHERE source_id=? AND novel_url=?", key.sourceId, key.url) { it.getString(1) }
-                .filter { url -> chapters.none { it.url == url } }.forEach { url ->
-                    db.execute("DELETE FROM reading_state_receipts WHERE source_id=? AND novel_url=? AND chapter_url=?", key.sourceId, key.url, url)
-                    db.execute("DELETE FROM reading_states WHERE source_id=? AND novel_url=? AND chapter_url=?", key.sourceId, key.url, url)
-                }
-            // Removal/relock revokes both live attempts and replay receipts, without discarding old content.
-            db.query("SELECT chapter_url FROM contents WHERE source_id=? AND novel_url=?", key.sourceId, key.url) { it.getString(1) }
-                .filter { url -> chapters.none { it.url == url && !it.locked } }.forEach { url ->
-                    db.execute("""UPDATE contents SET active_attempt=NULL,active_owner=NULL,base_revision=NULL,
-                        receipt_attempt=NULL,revision=? WHERE source_id=? AND novel_url=? AND chapter_url=?""",
-                        UUID.randomUUID().toString(), key.sourceId, key.url, url)
-                }
+            storeBook(key, book(key), novel, chapters, System.currentTimeMillis())
         }
         return book(key)!!
+    }
+
+    /** Writes metadata and the chapter list; callers hold a transaction. */
+    private fun storeBook(key: NovelKey, old: SavedBook?, novel: Novel, chapters: List<Chapter>, lastUpdated: Long) {
+        val metadata = SavedBook(
+            key = key,
+            novel = novel,
+            chapters = chapters,
+            favorite = old?.favorite ?: false,
+            position = old?.position,
+            resumeChapterUrl = old?.resumeChapterUrl,
+            categoryId = old?.categoryId,
+            lastReadAt = old?.lastReadAt ?: 0L,
+            lastUpdated = lastUpdated,
+            addedAt = old?.addedAt ?: 0L,
+            userRating = old?.userRating,
+            readerTextAlign = old?.readerTextAlign ?: ReaderTextAlign.AUTO,
+            chapterSortOrder = old?.chapterSortOrder ?: ChapterSort.NUMBER_ASC,
+            overrides = old?.overrides ?: NovelOverrides(),
+        )
+        db.execute("INSERT INTO books VALUES(?,?,?) ON CONFLICT(source_id,novel_url) DO UPDATE SET metadata=excluded.metadata",
+            key.sourceId, key.url, encodeBook(metadata).apply { remove("downloaded") }.toString())
+        val urls = chapters.mapTo(HashSet(chapters.size)) { it.url }
+        db.query("SELECT chapter_url FROM reading_states WHERE source_id=? AND novel_url=?", key.sourceId, key.url) { it.getString(1) }
+            .filter { it !in urls }.forEach { url ->
+                db.execute("DELETE FROM reading_state_receipts WHERE source_id=? AND novel_url=? AND chapter_url=?", key.sourceId, key.url, url)
+                db.execute("DELETE FROM reading_states WHERE source_id=? AND novel_url=? AND chapter_url=?", key.sourceId, key.url, url)
+            }
+        // Removal/relock revokes both live attempts and replay receipts, without discarding old content.
+        val readable = chapters.filterNot { it.locked }.mapTo(HashSet()) { it.url }
+        db.query("SELECT chapter_url FROM contents WHERE source_id=? AND novel_url=?", key.sourceId, key.url) { it.getString(1) }
+            .filter { it !in readable }.forEach { url ->
+                db.execute("""UPDATE contents SET active_attempt=NULL,active_owner=NULL,base_revision=NULL,
+                    receipt_attempt=NULL,revision=? WHERE source_id=? AND novel_url=? AND chapter_url=?""",
+                    UUID.randomUUID().toString(), key.sourceId, key.url, url)
+            }
+        db.query("SELECT chapter_url FROM library_updates WHERE source_id=? AND novel_url=?", key.sourceId, key.url) { it.getString(1) }
+            .filter { it !in urls }.forEach { url ->
+                db.execute("DELETE FROM library_updates WHERE source_id=? AND novel_url=? AND chapter_url=?", key.sourceId, key.url, url)
+            }
+    }
+
+    /**
+     * Applies one library refresh atomically against the latest stored novel, so a local
+     * edit made while the source call ran is never replaced by the start-of-run snapshot.
+     */
+    @Synchronized internal fun applyRefresh(key: NovelKey, fetched: Novel, chapters: List<Chapter>,
+        requireFavorite: Boolean, now: Long): RefreshOutcome {
+        val unique = chapters.distinctBy { it.url }
+        return write(invalidatesPositionEligibility = true) {
+            val current = book(key) ?: return@write RefreshOutcome.Skipped
+            if (requireFavorite && !current.favorite) return@write RefreshOutcome.Skipped
+            val title = current.effectiveNovel().title
+            val merged = mergeNovelMetadata(current.novel, fetched).copy(url = key.url)
+            val regressed = metadataRegressed(current.novel, fetched)
+            when (val plan = planChapterRefresh(current.chapters, unique)) {
+                is ChapterRefreshPlan.Keep -> {
+                    storeBook(key, current, merged, current.chapters, current.lastUpdated)
+                    putIssue(key, title, UpdateIssueSeverity.WARNING, plan.reason, now)
+                    RefreshOutcome.Updated(0, warned = true)
+                }
+                is ChapterRefreshPlan.Apply -> {
+                    val found = plan.found
+                    storeBook(key, current, merged, unique, if (found.isNotEmpty()) now else current.lastUpdated)
+                    val shownTitle = current.overrides.title ?: merged.title
+                    if (found.size > MAX_LOGGED_NEW_CHAPTERS) {
+                        putIssue(key, title, UpdateIssueSeverity.WARNING,
+                            "${found.size} chapters appeared at once — update entries suppressed " +
+                                "(source likely recovered from an earlier bad sync)", now)
+                        return@write RefreshOutcome.Updated(0, warned = true)
+                    }
+                    // Only library novels feed the updates list; a browsed novel's refresh is not news.
+                    if (current.favorite) found.forEach { (chapter, unlocked) ->
+                        db.execute("""INSERT INTO library_updates
+                            (source_id,novel_url,chapter_url,novel_title,chapter_name,chapter_number,found_at,locked,unlocked)
+                            VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(source_id,novel_url,chapter_url) DO UPDATE SET
+                            novel_title=excluded.novel_title, chapter_name=excluded.chapter_name,
+                            chapter_number=excluded.chapter_number, found_at=excluded.found_at,
+                            locked=excluded.locked, unlocked=excluded.unlocked""",
+                            key.sourceId, key.url, chapter.url, shownTitle, chapter.name, chapter.chapterNumber.toDouble(),
+                            now, if (chapter.locked) 1 else 0, if (unlocked) 1 else 0)
+                    }
+                    if (regressed) putIssue(key, title, UpdateIssueSeverity.WARNING, ISSUE_REGRESSION, now)
+                    else db.execute("DELETE FROM update_issues WHERE source_id=? AND novel_url=?", key.sourceId, key.url)
+                    RefreshOutcome.Updated(found.size, warned = regressed)
+                }
+            }
+        }.also { book(key) }
+    }
+
+    private fun putIssue(key: NovelKey, title: String, severity: UpdateIssueSeverity, message: String, at: Long) {
+        db.execute("""INSERT INTO update_issues VALUES(?,?,?,?,?,?) ON CONFLICT(source_id,novel_url) DO UPDATE SET
+            novel_title=excluded.novel_title, severity=excluded.severity, message=excluded.message, occurred_at=excluded.occurred_at""",
+            key.sourceId, key.url, title, severity.name, message, at)
+    }
+
+    @Synchronized internal fun setUpdateIssue(key: NovelKey, title: String, severity: UpdateIssueSeverity, message: String) {
+        write { if (book(key) != null) putIssue(key, title, severity, message, System.currentTimeMillis()) }
+    }
+
+    @Synchronized internal fun clearUpdateIssue(key: NovelKey) {
+        write { db.execute("DELETE FROM update_issues WHERE source_id=? AND novel_url=?", key.sourceId, key.url) }
+    }
+
+    @Synchronized internal fun clearUpdateIssues() {
+        write { db.execute("DELETE FROM update_issues") }
+    }
+
+    @Synchronized internal fun updateIssues(): List<DesktopUpdateIssue> {
+        database.verifyMarker()
+        return db.query("""SELECT source_id,novel_url,novel_title,severity,message,occurred_at FROM update_issues
+            ORDER BY CASE severity WHEN 'ERROR' THEN 0 ELSE 1 END, occurred_at DESC""") { r ->
+            DesktopUpdateIssue(NovelKey(r.getLong(1), r.getString(2)), r.getString(3),
+                UpdateIssueSeverity.entries.firstOrNull { it.name == r.getString(4) } ?: UpdateIssueSeverity.WARNING,
+                r.getString(5), r.getLong(6))
+        }
+    }
+
+    /** Newest first; [limit] keeps the pushed state small for very large feeds. */
+    @Synchronized internal fun libraryUpdates(limit: Int = UPDATE_FEED_LIMIT): List<DesktopUpdateEntry> {
+        database.verifyMarker()
+        return db.query("""SELECT id,source_id,novel_url,chapter_url,novel_title,chapter_name,chapter_number,found_at,locked,unlocked
+            FROM library_updates ORDER BY found_at DESC, chapter_number DESC, id DESC LIMIT ?""", limit) { r ->
+            DesktopUpdateEntry(r.getLong(1), ChapterKey(NovelKey(r.getLong(2), r.getString(3)), r.getString(4)),
+                r.getString(5), r.getString(6), r.getDouble(7).toFloat(), r.getLong(8), r.getInt(9) == 1, r.getInt(10) == 1)
+        }
+    }
+
+    @Synchronized internal fun deleteLibraryUpdates(ids: Collection<Long>) {
+        write { ids.forEach { db.execute("DELETE FROM library_updates WHERE id=?", it) } }
+    }
+
+    @Synchronized internal fun clearLibraryUpdates() {
+        write { db.execute("DELETE FROM library_updates") }
+    }
+
+    @Synchronized internal fun libraryUpdateSettings(): LibraryUpdateSettings {
+        database.verifyMarker()
+        return LibraryUpdateSettings.decode(db.query("SELECT value FROM settings WHERE name='library_update'") { it.getString(1) }.singleOrNull())
+    }
+
+    @Synchronized internal fun setLibraryUpdateSettings(settings: LibraryUpdateSettings) {
+        write { setSetting("library_update", settings.normalized().encode()) }
+    }
+
+    @Synchronized internal fun lastLibraryUpdate(): LibraryUpdateSummary? {
+        database.verifyMarker()
+        return LibraryUpdateSummary.decode(db.query("SELECT value FROM settings WHERE name='library_update_last'") { it.getString(1) }.singleOrNull())
+    }
+
+    @Synchronized internal fun setLastLibraryUpdate(summary: LibraryUpdateSummary) {
+        write { setSetting("library_update_last", summary.encode()) }
     }
 
     @Synchronized fun favorite(key: NovelKey, value: Boolean): SavedBook = updateMembership(key, value) ?: error("Novel is no longer stored")

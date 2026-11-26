@@ -3,6 +3,7 @@ package io.grimoire.desktop
 import io.grimoire.api.model.novel.Chapter
 import io.grimoire.api.model.novel.Novel
 import io.grimoire.api.model.novel.NovelPage
+import io.grimoire.api.model.novel.NovelStatus
 import io.grimoire.api.model.novel.PageContent
 import io.grimoire.api.source.Source
 import io.grimoire.api.source.web.ChapterListSource
@@ -28,9 +29,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
-enum class View { LIBRARY, BROWSE, BOOK, READER, HISTORY, EXTENSIONS, SETTINGS }
+enum class View { LIBRARY, UPDATES, BROWSE, BOOK, READER, HISTORY, EXTENSIONS, SETTINGS }
 data class ReaderState(
     val view: View = View.LIBRARY,
     val library: List<SavedBook> = emptyList(),
@@ -67,6 +69,14 @@ data class ReaderState(
     val appearance: DesktopAppearance = DesktopAppearance(),
     val readerSettings: DesktopReaderSettings = DesktopReaderSettings(),
     val categories: List<DesktopCategory> = emptyList(),
+    val updates: List<DesktopUpdateEntry> = emptyList(),
+    val updateIssues: List<DesktopUpdateIssue> = emptyList(),
+    /** Non-null while a library refresh runs; it does not block other actions. */
+    val libraryUpdate: LibraryUpdateProgress? = null,
+    val lastLibraryUpdate: LibraryUpdateSummary? = null,
+    val libraryUpdateSettings: LibraryUpdateSettings = LibraryUpdateSettings(),
+    /** Novels whose single-novel retry is running from the issues list. */
+    val retryingIssues: Set<NovelKey> = emptySet(),
 )
 
 data class BrowseSource(val sourceId: Long, val name: String, val lang: String)
@@ -82,6 +92,7 @@ class ReaderModel(
     checkpointDao: ReadingCheckpointDao = DesktopReadingCheckpointDao(library),
     operationDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val extensions: ExtensionManager? = null,
+    startScheduler: Boolean = false,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + operationDispatcher)
     private val checkpoints = ReaderCheckpoints(checkpointDao)
@@ -91,8 +102,9 @@ class ReaderModel(
     private val closeWrites = Mutex()
     private val operationLock = Any()
     // Installed extensions by package, plus at most one development manifest for this session.
-    private val installed = linkedMapOf<String, LocalExtension>()
-    private var sessionExtension: LocalExtension? = null
+    // Library updates read both from their own worker, so writes must be visible across threads.
+    private val installed: MutableMap<String, LocalExtension> = java.util.concurrent.ConcurrentHashMap()
+    @Volatile private var sessionExtension: LocalExtension? = null
     private var extensionFailures: Map<String, String> = emptyMap()
     private val mutable = MutableStateFlow(
         ReaderState(
@@ -101,8 +113,16 @@ class ReaderModel(
             appearance = library.appearance(),
             readerSettings = library.readerSettings(),
             categories = library.categories(),
+            updates = library.libraryUpdates(),
+            updateIssues = library.updateIssues(),
+            lastLibraryUpdate = library.lastLibraryUpdate(),
+            libraryUpdateSettings = library.libraryUpdateSettings(),
         ),
     )
+    // Library refreshes run beside navigation instead of claiming the busy flag.
+    private val updaterScope = CoroutineScope(SupervisorJob() + operationDispatcher)
+    private val updater = LibraryUpdater(library) { id -> extensionFor(id)?.source }
+    private var libraryUpdateJob: Job? = null
     // The history worker is drained separately from navigation jobs before closing the store.
     private val historyScope = CoroutineScope(SupervisorJob() + operationDispatcher)
     private val historyWrites = OpenedHistoryWrites(historyScope, DesktopOpenedHistoryDao(library)) { failure ->
@@ -131,6 +151,7 @@ class ReaderModel(
                 mutable.update { it.copy(extensionNotice = "Could not load installed extensions: ${failure.message}") }
             }
         }
+        if (startScheduler) startLibraryUpdateScheduler()
     }
 
     private fun extensionFor(sourceId: Long?): LocalExtension? = sourceId?.let { id ->
@@ -381,6 +402,12 @@ class ReaderModel(
                 val saved = library.saved()
                 publishView { it.leaveBook(section).copy(library = saved) }
             }
+            View.UPDATES -> {
+                val saved = library.saved()
+                val feed = library.libraryUpdates()
+                val issues = library.updateIssues()
+                publishView { it.leaveBook(section).copy(library = saved, updates = feed, updateIssues = issues) }
+            }
             View.HISTORY -> {
                 lastHistoryOpen?.join()
                 val entries = library.openedHistory()
@@ -544,6 +571,7 @@ class ReaderModel(
         mutable.update { it.copy(book = updated ?: it.book, library = library.saved()) }
     }
 
+    /** Same guards as a library update: a blank or truncated response never replaces the stored list. */
     fun refreshBook() = operate {
         val current = state.value.book ?: error("Open a novel first")
         check(!state.value.offline) { "Go online to refresh this novel" }
@@ -551,14 +579,20 @@ class ReaderModel(
         val source = loaded.source
         check(source is ChapterListSource || source is CursorPaginatedSource) { "This source's chapter list is unsupported" }
         val details = source.getNovelDetails(current.novel)
-        val chapters = sourceChapters(source, details)
-        check(chapters.isNotEmpty()) { "The source returned no chapters" }
-        val refreshed = library.remember(current.key, details, chapters)
-        mutable.update { it.copy(book = refreshed, library = library.saved()) }
+        val chapters = sourceChapters(source, mergeNovelMetadata(current.novel, details))
+        val outcome = library.applyRefresh(current.key, details, chapters, requireFavorite = false, System.currentTimeMillis())
+        publishUpdateResults(current.key)
+        if (outcome is RefreshOutcome.Updated && outcome.warned) {
+            library.updateIssues().firstOrNull { it.key == current.key }?.let { error(it.message) }
+        }
     }
 
     fun downloadChapters(chapterUrls: List<String>) = operate {
         val book = state.value.book ?: error("Open a novel first")
+        downloadInto(book, chapterUrls)
+    }
+
+    private suspend fun downloadInto(book: SavedBook, chapterUrls: List<String>) {
         check(!state.value.offline) { "Go online to download chapters" }
         val loaded = extensionFor(book.key.sourceId) ?: error("Install this novel's extension to download chapters")
         val source = loaded.source as? PageListSource ?: error("This source cannot provide chapter pages")
@@ -577,7 +611,211 @@ class ReaderModel(
                 runCatching { downloads.fail(attempt, DownloadFailure.ERROR) }
                 throw failure
             }
-            mutable.update { it.copy(book = library.book(book.key) ?: it.book, library = library.saved()) }
+            mutable.update { st -> st.copy(book = if (st.book?.key == book.key) library.book(book.key) ?: st.book else st.book, library = library.saved()) }
+        }
+    }
+
+    fun showUpdates() {
+        synchronized(operationLock) {
+            if (!state.value.busy && !closing.get() && state.value.view != View.READER) {
+                mutable.update { it.leaveBook(View.UPDATES) }
+            }
+        }
+        navigate { showSection(View.UPDATES) }
+    }
+
+    /** Refreshes the whole library, or one category. Runs beside reading and browsing. */
+    fun updateLibrary(categoryId: Long?) {
+        synchronized(operationLock) {
+            if (closing.get() || libraryUpdateJob?.isActive == true) return
+            if (state.value.offline) {
+                mutable.update { it.copy(error = "Go online to update your library") }
+                return
+            }
+            mutable.update { it.copy(libraryUpdate = LibraryUpdateProgress(0, 0, null, categoryId), error = null) }
+            libraryUpdateJob = updaterScope.launch { runLibraryUpdate(categoryId) }
+        }
+    }
+
+    fun cancelLibraryUpdate() {
+        libraryUpdateJob?.cancel()
+    }
+
+    private suspend fun runLibraryUpdate(categoryId: Long?) {
+        val checked = AtomicInteger()
+        val found = AtomicInteger()
+        val warnings = AtomicInteger()
+        val errors = AtomicInteger()
+        val lastPublish = AtomicLong(0L)
+        var finished = false
+        try {
+            val settings = state.value.libraryUpdateSettings
+            val targets = library.saved().filter { book ->
+                (categoryId == null || book.categoryId == categoryId) &&
+                    !(settings.skipCompleted && book.effectiveNovel().status == NovelStatus.COMPLETED)
+            }
+            updater.run(
+                targets,
+                settings.concurrency,
+                onProgress = { done, total, title ->
+                    mutable.update { st ->
+                        val p = st.libraryUpdate ?: return@update st
+                        st.copy(libraryUpdate = p.copy(done = done, total = total, current = title ?: p.current))
+                    }
+                },
+                onNovelDone = { key, outcome ->
+                    checked.incrementAndGet()
+                    when (outcome) {
+                        is RefreshOutcome.Updated -> {
+                            found.addAndGet(outcome.newChapters)
+                            if (outcome.warned) warnings.incrementAndGet()
+                        }
+                        RefreshOutcome.Failed -> errors.incrementAndGet()
+                        RefreshOutcome.Skipped -> Unit
+                    }
+                    // Re-reading the whole library per novel is quadratic; publish at most once a second.
+                    val now = System.currentTimeMillis()
+                    val previous = lastPublish.get()
+                    if ((now - previous >= 1_000L && lastPublish.compareAndSet(previous, now)) ||
+                        outcome.newChapters > 0 || state.value.book?.key == key) {
+                        runCatching { publishUpdateResults(key) }
+                    }
+                },
+            )
+            finished = true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            mutable.update { it.copy(error = "Library update failed: ${failure.message ?: failure.javaClass.simpleName}") }
+        } finally {
+            val summary = LibraryUpdateSummary(System.currentTimeMillis(), checked.get(), found.get(), warnings.get(),
+                errors.get(), cancelled = !finished)
+            if (!closing.get()) withContext(NonCancellable) {
+                runCatching { library.setLastLibraryUpdate(summary) }
+                runCatching { publishUpdateResults(null) }
+            }
+            mutable.update { it.copy(libraryUpdate = null, lastLibraryUpdate = summary) }
+        }
+    }
+
+    private fun publishUpdateResults(key: NovelKey?) {
+        val saved = library.saved()
+        val feed = library.libraryUpdates()
+        val issues = library.updateIssues()
+        val openKey = state.value.book?.key?.takeIf { key == null || it == key }
+        val open = openKey?.let { library.book(it) }
+        mutable.update { st ->
+            st.copy(library = saved, updates = feed, updateIssues = issues,
+                book = if (open != null && st.book?.key == open.key) open else st.book)
+        }
+    }
+
+    /** Checks on launch and then every interval while the app stays open. */
+    private fun startLibraryUpdateScheduler() {
+        updaterScope.launch {
+            delay(LAUNCH_UPDATE_DELAY_MS)
+            if (state.value.libraryUpdateSettings.updateOnLaunch) startScheduledUpdate()
+            while (isActive) {
+                delay(SCHEDULER_TICK_MS)
+                val current = state.value
+                val settings = current.libraryUpdateSettings
+                if (!settings.autoUpdate) continue
+                val last = current.lastLibraryUpdate?.finishedAt ?: 0L
+                if (System.currentTimeMillis() - last >= settings.intervalHours * 3_600_000L) startScheduledUpdate()
+            }
+        }
+    }
+
+    private fun startScheduledUpdate() {
+        if (!state.value.offline && state.value.library.isNotEmpty()) updateLibrary(null)
+    }
+
+    fun setLibraryUpdateSettings(settings: LibraryUpdateSettings) = background("Could not save library update settings") {
+        val value = settings.normalized()
+        mutable.update { it.copy(libraryUpdateSettings = value) }
+        library.setLibraryUpdateSettings(value)
+    }
+
+    fun retryUpdateIssue(key: NovelKey) {
+        synchronized(operationLock) {
+            if (closing.get() || key in state.value.retryingIssues) return
+            if (state.value.offline) {
+                mutable.update { it.copy(error = "Go online to retry this update") }
+                return
+            }
+            mutable.update { it.copy(retryingIssues = it.retryingIssues + key, error = null) }
+            updaterScope.launch {
+                try {
+                    updater.refreshOne(key)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    mutable.update { it.copy(error = "Retry failed: ${failure.message ?: failure.javaClass.simpleName}") }
+                } finally {
+                    mutable.update { it.copy(retryingIssues = it.retryingIssues - key) }
+                    if (!closing.get()) runCatching { publishUpdateResults(key) }
+                }
+            }
+        }
+    }
+
+    fun dismissUpdateIssue(key: NovelKey) = background("Could not dismiss the issue") {
+        library.clearUpdateIssue(key)
+        mutable.update { it.copy(updateIssues = library.updateIssues()) }
+    }
+
+    fun clearUpdateIssues() = background("Could not clear issues") {
+        library.clearUpdateIssues()
+        mutable.update { it.copy(updateIssues = emptyList()) }
+    }
+
+    fun removeUpdates(ids: List<Long>) = background("Could not remove updates") {
+        library.deleteLibraryUpdates(ids)
+        mutable.update { it.copy(updates = library.libraryUpdates()) }
+    }
+
+    fun clearUpdates() = background("Could not clear updates") {
+        library.clearLibraryUpdates()
+        mutable.update { it.copy(updates = emptyList()) }
+    }
+
+    fun markUpdatesRead(ids: List<Long>, read: Boolean) = background("Could not update read state") {
+        val now = System.currentTimeMillis()
+        state.value.updates.filter { it.id in ids }.forEach { entry ->
+            val input = if (read) ReadingCompletionInput.MarkRead(entry.key, now) else ReadingCompletionInput.MarkUnread(entry.key)
+            readingStates.prepareExplicit(input)?.let { readingStates.submit(it) }
+        }
+        publishUpdateResults(null)
+    }
+
+    fun downloadUpdates(ids: List<Long>) = operate {
+        val byNovel = state.value.updates.filter { it.id in ids }.groupBy { it.key.novel }
+        for ((novel, entries) in byNovel) {
+            val book = library.book(novel) ?: continue
+            downloadInto(book, entries.map { it.key.url })
+        }
+        publishUpdateResults(null)
+    }
+
+    fun readUpdate(id: Long) = navigate {
+        val entry = state.value.updates.firstOrNull { it.id == id } ?: error("This update is no longer listed")
+        val book = library.book(entry.key.novel) ?: error("This novel is no longer available")
+        val chapter = book.chapters.find { it.url == entry.key.url && !it.locked }
+            ?: error("This chapter is locked or unavailable")
+        readChapter(book, chapter, View.UPDATES)
+    }
+
+    /** Short store writes that must not wait behind, or block, a running operation. */
+    private fun background(failurePrefix: String, action: suspend () -> Unit) {
+        synchronized(operationLock) {
+            if (closing.get()) return
+            settingsScope.launch {
+                try { action() }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (failure: Exception) {
+                    mutable.update { it.copy(error = "$failurePrefix: ${failure.message ?: failure.javaClass.simpleName}") }
+                }
+            }
         }
     }
 
@@ -673,15 +911,16 @@ class ReaderModel(
         }
     }
 
-    fun openSaved(book: SavedBook) {
+    fun openSaved(book: SavedBook, origin: View = View.LIBRARY) {
+        require(origin == View.LIBRARY || origin == View.UPDATES) { "Unsupported origin" }
         synchronized(operationLock) {
             if (!state.value.busy && !closing.get() && state.value.view != View.READER) {
-                mutable.update { it.leaveBook(View.BOOK).copy(book = book, bookOrigin = View.LIBRARY) }
+                mutable.update { it.leaveBook(View.BOOK).copy(book = book, bookOrigin = origin) }
             }
         }
         navigate {
             val stored = library.book(book.key)
-            publishView { it.leaveBook(View.BOOK).copy(book = stored, bookOrigin = View.LIBRARY) }
+            publishView { it.leaveBook(View.BOOK).copy(book = stored, bookOrigin = origin) }
         }
     }
 
@@ -851,6 +1090,9 @@ class ReaderModel(
 
     suspend fun close() = closeWrites.withLock {
         synchronized(operationLock) { closing.set(true); checkpoints.retire() }
+        // Extension network calls may not be cancellable; never let one hold up shutdown for long.
+        updaterScope.coroutineContext.job.children.forEach { it.cancel() }
+        withTimeoutOrNull(UPDATER_SHUTDOWN_MS) { updaterScope.coroutineContext.job.children.toList().joinAll() }
         try {
             // Let the claimed operation finish, then save before cancelling the usable scope.
             scope.coroutineContext.job.children.toList().joinAll()
@@ -866,6 +1108,7 @@ class ReaderModel(
             throw failure
         }
         scope.coroutineContext.job.cancelAndJoin()
+        updaterScope.coroutineContext.job.cancel()
         historyScope.coroutineContext.job.cancelAndJoin()
         settingsScope.coroutineContext.job.cancelAndJoin()
         withContext(Dispatchers.IO) {
@@ -923,6 +1166,10 @@ class ReaderModel(
     }
 
 }
+
+private const val LAUNCH_UPDATE_DELAY_MS = 8_000L
+private const val SCHEDULER_TICK_MS = 60_000L
+private const val UPDATER_SHUTDOWN_MS = 3_000L
 
 internal suspend fun sourceChapters(source: Source, novel: Novel): List<Chapter> = when (source) {
     is CursorPaginatedSource -> source.getAllChapters(novel)

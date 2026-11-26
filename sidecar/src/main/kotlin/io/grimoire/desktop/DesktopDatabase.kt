@@ -70,6 +70,7 @@ internal class DesktopDatabase(
                 if (oldVersion < 4L) connection.execute(CREATE_OPENED_HISTORY)
                 if (oldVersion < 5L) createExtensionTables(connection)
                 if (oldVersion < 6L) connection.execute(CREATE_CATEGORIES)
+                if (oldVersion < 7L) createUpdateTables(connection)
                 connection.execute("PRAGMA user_version=$DESKTOP_SCHEMA_VERSION")
             }
             // The exclusive lease proves the previous process cannot still complete a callback.
@@ -153,6 +154,7 @@ internal class DesktopDatabase(
                 db.execute(CREATE_OPENED_HISTORY)
                 createExtensionTables(db)
                 db.execute(CREATE_CATEGORIES)
+                createUpdateTables(db)
                 db.execute("INSERT INTO settings VALUES('id',?),('phase','imported')", UUID.randomUUID().toString())
                 books.forEach { book -> db.execute("INSERT INTO books VALUES(?,?,?)", book.key.sourceId, book.key.url,
                     encodeBook(book).apply { remove("downloaded") }.toString()) }
@@ -279,7 +281,26 @@ private fun createReadingStateTables(db: Connection) {
         PRIMARY KEY(source_id,novel_url,chapter_url,command_id), FOREIGN KEY(source_id,novel_url) REFERENCES books(source_id,novel_url) ON DELETE CASCADE)""")
 }
 
-private const val DESKTOP_SCHEMA_VERSION = 6L
+private const val DESKTOP_SCHEMA_VERSION = 7L
+
+/** SQL7: new-chapter feed and the latest refresh problem per novel. */
+private fun createUpdateTables(db: Connection) {
+    db.execute("""CREATE TABLE library_updates(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id INTEGER NOT NULL, novel_url TEXT NOT NULL, chapter_url TEXT NOT NULL,
+        novel_title TEXT NOT NULL, chapter_name TEXT NOT NULL, chapter_number REAL NOT NULL,
+        found_at INTEGER NOT NULL,
+        locked INTEGER NOT NULL DEFAULT 0 CHECK(locked IN (0,1)),
+        unlocked INTEGER NOT NULL DEFAULT 0 CHECK(unlocked IN (0,1)),
+        UNIQUE(source_id,novel_url,chapter_url),
+        FOREIGN KEY(source_id,novel_url) REFERENCES books(source_id,novel_url) ON DELETE CASCADE)""")
+    db.execute("CREATE INDEX library_updates_found ON library_updates(found_at DESC)")
+    db.execute("""CREATE TABLE update_issues(
+        source_id INTEGER NOT NULL, novel_url TEXT NOT NULL, novel_title TEXT NOT NULL,
+        severity TEXT NOT NULL, message TEXT NOT NULL, occurred_at INTEGER NOT NULL,
+        PRIMARY KEY(source_id,novel_url),
+        FOREIGN KEY(source_id,novel_url) REFERENCES books(source_id,novel_url) ON DELETE CASCADE)""")
+}
 
 private const val CREATE_CATEGORIES = """CREATE TABLE IF NOT EXISTS categories(
     id INTEGER PRIMARY KEY AUTOINCREMENT,

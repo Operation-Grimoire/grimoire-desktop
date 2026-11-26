@@ -1,5 +1,6 @@
 export type ViewName =
   | "LIBRARY"
+  | "UPDATES"
   | "BROWSE"
   | "BOOK"
   | "READER"
@@ -155,6 +156,59 @@ export interface PendingRepository {
   warning: string | null;
 }
 
+export interface UpdateEntry {
+  id: number;
+  sourceId: number;
+  novelUrl: string;
+  chapterUrl: string;
+  novelTitle: string;
+  thumbnailUrl: string | null;
+  chapterName: string;
+  chapterNumber: number;
+  foundAt: number;
+  locked: boolean;
+  /** Existed before but was locked; now readable. */
+  unlocked: boolean;
+  read: boolean;
+  downloaded: boolean;
+}
+
+export type UpdateIssueSeverity = "WARNING" | "ERROR";
+
+export interface UpdateIssue {
+  sourceId: number;
+  novelUrl: string;
+  novelTitle: string;
+  severity: UpdateIssueSeverity;
+  message: string;
+  occurredAt: number;
+  retrying: boolean;
+}
+
+export interface LibraryUpdateProgress {
+  done: number;
+  total: number;
+  current: string | null;
+  categoryId: number | null;
+}
+
+export interface LibraryUpdateSummary {
+  finishedAt: number;
+  checked: number;
+  newChapters: number;
+  warnings: number;
+  errors: number;
+  cancelled: boolean;
+}
+
+export interface LibraryUpdateSettings {
+  updateOnLaunch: boolean;
+  autoUpdate: boolean;
+  intervalHours: number;
+  concurrency: number;
+  skipCompleted: boolean;
+}
+
 export interface DesktopAppearance {
   themeMode: ThemeMode;
   colorTheme: ColorTheme;
@@ -205,6 +259,11 @@ export interface ReaderState {
   pendingRepository: PendingRepository | null;
   appearance: DesktopAppearance;
   readerSettings: DesktopReaderSettings;
+  updates: UpdateEntry[];
+  updateIssues: UpdateIssue[];
+  libraryUpdate: LibraryUpdateProgress | null;
+  lastLibraryUpdate: LibraryUpdateSummary | null;
+  libraryUpdateSettings: LibraryUpdateSettings;
 }
 
 export interface DaemonSnapshot {
