@@ -1,11 +1,14 @@
 package io.grimoire.desktop
 
+import io.grimoire.api.model.filter.Filter
 import io.grimoire.api.model.novel.Chapter
 import io.grimoire.api.model.novel.Novel
 import io.grimoire.api.model.novel.NovelPage
 import io.grimoire.api.model.novel.NovelStatus
 import io.grimoire.api.model.novel.PageContent
 import io.grimoire.api.source.Source
+import io.grimoire.api.source.feature.FilterSource
+import io.grimoire.api.source.feature.SearchSource
 import io.grimoire.api.source.web.ChapterListSource
 import io.grimoire.api.source.web.CursorPaginatedSource
 import io.grimoire.api.source.web.PageListSource
@@ -63,6 +66,8 @@ data class ReaderState(
     /** Pages loaded for the current listing; 0 until the first page arrives. */
     val browsePage: Int = 0,
     val browseHasMore: Boolean = false,
+    /** The current source's filters; null when it has none. */
+    val browseFilters: BrowseFilterPanel? = null,
     val extensionRows: List<ExtensionRow> = emptyList(),
     val repositories: List<RepositoryView> = emptyList(),
     val pendingRepository: PendingRepository? = null,
@@ -181,6 +186,98 @@ class ReaderModel(
         .map { BrowseSource(it.sourceId, it.source.name, it.source.lang.code) }
         .sortedBy { it.name.lowercase() }
 
+    // The current source's own filter objects; searches pass these, with the UI's states written in.
+    private val filterLock = Any()
+    @Volatile private var filterSource: Source? = null
+    private var filterList: List<Filter<*>> = emptyList()
+    private var filterDefaults: List<FilterEntry> = emptyList()
+
+    /** Loads the filter list when the Browse source changes, or its extension was reloaded. */
+    private fun syncBrowseFilters() = synchronized(filterLock) {
+        val id = state.value.browseSource
+        val source = extensionFor(id)?.source
+        if (source === filterSource) return
+        filterSource = source
+        val list = if (source is FilterSource && source is SearchSource) {
+            runCatching { source.getFilterList() }.getOrDefault(emptyList())
+        } else emptyList()
+        filterList = list
+        filterDefaults = snapshotFilters(list, null)
+        val panel = if (id == null || list.isEmpty()) null else BrowseFilterPanel(
+            sourceId = id,
+            status = if (runCatching { (source as FilterSource).hasDynamicFilters }.getOrDefault(false)) FilterStatus.NEEDS_LOAD else FilterStatus.READY,
+            entries = filterDefaults,
+            searchWithFilters = runCatching { (source as SearchSource).supportsSearchWithFilters }.getOrDefault(false),
+        )
+        mutable.update { st ->
+            // Results filtered through the replaced objects can't be paged further; start over.
+            if (st.browseFilters?.applied == true && st.browseMode == BrowseMode.SEARCH) {
+                st.copy(browseFilters = panel, novels = emptyList(), browsePage = 0, browseHasMore = false)
+            } else st.copy(browseFilters = panel)
+        }
+    }
+
+    /** Puts every filter back to its default; the listing is no longer filtered. */
+    private fun clearBrowseFilters() = synchronized(filterLock) {
+        applyFilterInputs(filterList, defaultInputs(filterDefaults))
+        val entries = snapshotFilters(filterList, filterDefaults)
+        mutable.update { st -> st.copy(browseFilters = st.browseFilters?.copy(entries = entries, applied = false)) }
+    }
+
+    /** Fetches filter options that come from the site, such as its genre list. */
+    fun loadFilterOptions() = navigate {
+        val source = synchronized(filterLock) { filterSource } as? FilterSource ?: error("This source has no filters")
+        check(!state.value.offline) { "Loading filter options is unavailable offline" }
+        fun publish(change: (BrowseFilterPanel) -> BrowseFilterPanel) = mutable.update { st ->
+            val panel = st.browseFilters
+            if (panel == null || filterSource !== source) st else st.copy(browseFilters = change(panel))
+        }
+        publish { it.copy(status = FilterStatus.LOADING, error = null) }
+        try {
+            val list = source.fetchFilterOptions()
+            synchronized(filterLock) {
+                if (filterSource !== source) return@navigate
+                filterList = list
+                filterDefaults = snapshotFilters(list, null)
+                publish { it.copy(status = if (list.isEmpty()) FilterStatus.ERROR else FilterStatus.LOADED,
+                    entries = filterDefaults, applied = false,
+                    error = if (list.isEmpty()) "The source returned no filter options" else null) }
+            }
+        } catch (cancelled: CancellationException) {
+            publish { it.copy(status = FilterStatus.NEEDS_LOAD) }
+            throw cancelled
+        } catch (failure: Throwable) {
+            if (failure is VirtualMachineError) throw failure
+            publish { it.copy(status = FilterStatus.ERROR, error = failure.message ?: failure.javaClass.simpleName) }
+        }
+    }
+
+    /** Searches with [inputs] written into the source's filters; [query] counts only where the source allows it. */
+    fun applyFilters(inputs: List<FilterInput>, query: String) = navigate {
+        check(!state.value.offline) { "Browsing is unavailable offline" }
+        check(BrowseMode.SEARCH in state.value.browseModes) { "This source cannot search" }
+        val panel = state.value.browseFilters ?: error("This source has no filters")
+        check(panel.status.canApply) { "Load the filter options first" }
+        val entries = synchronized(filterLock) {
+            applyFilterInputs(filterList, inputs)
+            snapshotFilters(filterList, filterDefaults)
+        }
+        val text = if (panel.searchWithFilters) query.trim() else ""
+        publishView { it.leaveBook(View.BROWSE).copy(browseMode = BrowseMode.SEARCH, browseQuery = text, browsePage = 0,
+            browseHasMore = false, novels = emptyList(), browseFilters = panel.copy(entries = entries, applied = true)) }
+        loadCatalog(reset = true)
+    }
+
+    /** Back to an unfiltered listing: a typed search runs again without filters, a blank one waits for input. */
+    fun clearFilters() = navigate {
+        clearBrowseFilters()
+        publishView { it.leaveBook(View.BROWSE).copy(browsePage = 0, browseHasMore = false, novels = emptyList()) }
+        val st = state.value
+        if (!st.offline && (st.listsWithoutQuery || (st.browseMode == BrowseMode.SEARCH && st.browseQuery.isNotBlank()))) {
+            loadCatalog(reset = true)
+        }
+    }
+
     /** Publishes the source list and keeps the Browse selection only while its source is still loaded. */
     private fun publishSources(select: Long? = null) {
         val sources = browseSources()
@@ -194,6 +291,7 @@ class ReaderModel(
             else named.copy(browseModes = modes, browseMode = modes.firstOrNull(), browseQuery = "", browsePage = 0,
                 browseHasMore = false, novels = emptyList())
         }
+        syncBrowseFilters()
     }
 
     private fun publishExtensions(notice: String? = null) {
@@ -307,6 +405,8 @@ class ReaderModel(
 
     fun setBrowseMode(mode: BrowseMode) = navigate {
         check(mode in state.value.browseModes) { "This source does not offer ${mode.label.lowercase()} titles" }
+        // Popular and Latest are unfiltered; Search starts from a plain query again.
+        if (state.value.browseFilters?.applied == true) clearBrowseFilters()
         publishView { it.leaveBook(View.BROWSE).copy(browseMode = mode, browsePage = 0, browseHasMore = false, novels = emptyList()) }
         if (state.value.listsWithoutQuery) loadCatalog(reset = true)
     }
@@ -315,6 +415,8 @@ class ReaderModel(
         val text = query.trim()
         require(text.isNotEmpty()) { "Enter a title to search for" }
         check(BrowseMode.SEARCH in state.value.browseModes) { "This source cannot search" }
+        // A plain search is separate from filtering, as on Android.
+        if (state.value.browseFilters?.applied == true) clearBrowseFilters()
         publishView { it.leaveBook(View.BROWSE).copy(browseMode = BrowseMode.SEARCH, browseQuery = text, browsePage = 0,
             browseHasMore = false, novels = emptyList()) }
         loadCatalog(reset = true)
@@ -335,10 +437,14 @@ class ReaderModel(
         val source = extensionFor(request.browseSource)?.source ?: error("Choose a source to browse")
         val mode = request.browseMode ?: error("This source has no catalog to browse")
         val page = if (reset) 1 else request.browsePage + 1
-        val result = catalogPage(source, mode, request.browseQuery, page)
+        val filtered = mode == BrowseMode.SEARCH && request.browseFilters?.applied == true
+        val filters = if (filtered) synchronized(filterLock) { filterList.takeIf { filterSource === source } }
+            ?: error("The filters changed; apply them again") else emptyList()
+        val result = catalogPage(source, mode, request.browseQuery, page, filters)
         publishView { current ->
-            // A result for another source, listing or query is dropped.
-            if (current.browseSource != request.browseSource || current.browseMode != mode || current.browseQuery != request.browseQuery) current
+            // A result for another source, listing, query or filter set is dropped.
+            if (current.browseSource != request.browseSource || current.browseMode != mode || current.browseQuery != request.browseQuery ||
+                current.browseFilters?.applied != request.browseFilters?.applied) current
             else {
                 val listing = mergeCatalog(if (reset) emptyList() else current.novels, result)
                 current.leaveBook(View.BROWSE).copy(novels = listing.novels, browsePage = page, browseHasMore = listing.hasMore)
