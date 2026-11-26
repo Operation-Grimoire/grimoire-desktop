@@ -795,7 +795,8 @@ class ReaderModel(
     private suspend fun downloadNewChapters(queue: Map<NovelKey, List<String>>) {
         val total = queue.values.sumOf { it.size }
         var done = 0
-        var failedNovels = 0
+        // Title and reason of each novel whose download failed.
+        val failures = mutableListOf<Pair<String, String>>()
         for ((key, urls) in queue) {
             val book = library.book(key) ?: continue
             mutable.update { st ->
@@ -807,12 +808,14 @@ class ReaderModel(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                failedNovels++
+                failures += book.effectiveNovel().title to (failure.message ?: failure.javaClass.simpleName)
             }
             done += urls.size
         }
-        if (failedNovels > 0) {
-            mutable.update { it.copy(error = "Couldn't download new chapters for ${plural(failedNovels, "novel")}") }
+        if (failures.isNotEmpty()) {
+            val (title, reason) = failures.first()
+            val others = if (failures.size > 1) " (and ${plural(failures.size - 1, "other novel")})" else ""
+            mutable.update { it.copy(error = "Couldn't download new chapters for $title$others: $reason") }
         }
     }
 
