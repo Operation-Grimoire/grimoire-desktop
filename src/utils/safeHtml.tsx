@@ -65,7 +65,7 @@ export function renderSafeHtml(html: string): React.ReactNode {
 /** Elements rendered as their own block below; see convertNode. */
 const BLOCK_TAGS = new Set([
   "p", "div", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "center", "pre",
-  "section", "article", "tr", "hr", "blockquote", "table", "tbody", "thead",
+  "section", "article", "tr", "hr", "blockquote", "table", "tbody", "thead", "dl", "dt", "dd",
 ]);
 
 const isBlock = (node: ChildNode | null) =>
@@ -141,6 +141,9 @@ function convertNode(node: ChildNode, key: string): React.ReactNode {
     case "section":
     case "article":
     case "tr":
+    case "dl":
+    case "dt":
+    case "dd":
       return (
         <span key={key} className="mb-2 block last:mb-0">
           {children}
@@ -148,6 +151,17 @@ function convertNode(node: ChildNode, key: string): React.ReactNode {
       );
     case "span":
       return <React.Fragment key={key}>{children}</React.Fragment>;
+    // Cells keep their row on one line, separated like "Author · Tianyun".
+    case "td":
+    case "th": {
+      const next = el.nextElementSibling?.tagName.toLowerCase();
+      return (
+        <React.Fragment key={key}>
+          {children}
+          {next === "td" || next === "th" ? " · " : null}
+        </React.Fragment>
+      );
+    }
     case "hr":
       return <span key={key} className="my-2 block border-t border-current opacity-20" />;
     case "blockquote":
