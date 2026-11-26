@@ -672,14 +672,16 @@ class ReaderModel(
         var failed = false
         try {
             val settings = state.value.libraryUpdateSettings
-            val targets = library.saved().filter { book ->
-                if (only != null) book.key in only
-                else (categoryId == null || book.categoryId == categoryId) &&
+            // Chosen novels may be outside the library (restored reading history).
+            val targets = if (only != null) library.allBooks().filter { it.key in only }
+            else library.saved().filter { book ->
+                (categoryId == null || book.categoryId == categoryId) &&
                     !(settings.skipCompleted && book.effectiveNovel().status == NovelStatus.COMPLETED)
             }
             updater.run(
                 targets,
                 settings.concurrency,
+                requireFavorite = only == null,
                 onProgress = { done, total, title ->
                     mutable.update { st ->
                         val p = st.libraryUpdate ?: return@update st
@@ -722,6 +724,13 @@ class ReaderModel(
                 runCatching { publishUpdateResults(null) }
             }
             mutable.update { it.copy(libraryUpdate = null, lastLibraryUpdate = summary) }
+            // Restored reading history outside the library is not a library target; finish its lists next.
+            if (finished && only == null && !closing.get()) {
+                val leftover = runCatching {
+                    library.allBooks().filter { !it.favorite && it.chaptersIncomplete }.mapTo(HashSet()) { it.key }
+                }.getOrDefault(emptySet())
+                if (leftover.isNotEmpty()) updaterScope.launch { updateBooks(leftover) }
+            }
         }
     }
 
@@ -919,7 +928,8 @@ class ReaderModel(
         publishUpdateResults(null)
         mutable.update { it.copy(categories = library.categories()) }
 
-        val incomplete = library.saved().filter { it.chaptersIncomplete }.mapTo(HashSet()) { it.key }
+        // Includes restored reading history outside the library.
+        val incomplete = library.allBooks().filter { it.chaptersIncomplete }.mapTo(HashSet()) { it.key }
         val notes = buildList {
             add("Restored ${plural(restored, "novel")} ($added new), ${plural(marked, "read chapter")}")
             if (missingSources.isNotEmpty()) add("${plural(missingSources.size, "source")} not installed — install them in Extensions to read and update those novels")

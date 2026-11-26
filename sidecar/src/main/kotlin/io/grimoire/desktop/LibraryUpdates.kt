@@ -227,6 +227,8 @@ internal class LibraryUpdater(
         concurrency: Int,
         onProgress: (done: Int, total: Int, title: String?) -> Unit,
         onNovelDone: (NovelKey, RefreshOutcome) -> Unit,
+        /** False for chosen novels outside the library, such as restored reading history. */
+        requireFavorite: Boolean = true,
     ): LibraryUpdateSummary = runLock.withLock {
         val total = targets.size
         val queue = ArrayDeque(targets)
@@ -244,7 +246,7 @@ internal class LibraryUpdater(
                         val book = queueLock.withLock { queue.removeFirstOrNull() } ?: break
                         val outcome = try {
                             onProgress(done.get(), total, book.effectiveNovel().title)
-                            gates.getValue(book.key.sourceId).run { refresh(book, requireFavorite = true) }
+                            gates.getValue(book.key.sourceId).run { refresh(book, requireFavorite) }
                                 ?: pausedOutcome(book)
                         } catch (cancelled: CancellationException) {
                             throw cancelled
