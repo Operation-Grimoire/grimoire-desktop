@@ -144,6 +144,7 @@ export function SettingsView({ state }: { state: ReaderState }) {
                 </div>
               </div>
               <ToggleSwitch
+                label="Offline mode"
                 checked={state.offline}
                 onChange={(offline) => rpc("offline", { offline })}
               />
@@ -173,14 +174,15 @@ function LibraryUpdatesSection({ state }: { state: ReaderState }) {
 
       <div className="mt-3 divide-y divide-[var(--border-hairline)] rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-surface)]/60">
         <SettingRow title="Check on launch" subtitle="Update the library a few seconds after Grimoire starts.">
-          <ToggleSwitch checked={settings.updateOnLaunch} onChange={(v) => save({ updateOnLaunch: v })} />
+          <ToggleSwitch label="Check on launch" checked={settings.updateOnLaunch} onChange={(v) => save({ updateOnLaunch: v })} />
         </SettingRow>
         <SettingRow title="Automatic updates" subtitle="Update the library again on a schedule.">
-          <ToggleSwitch checked={settings.autoUpdate} onChange={(v) => save({ autoUpdate: v })} />
+          <ToggleSwitch label="Automatic updates" checked={settings.autoUpdate} onChange={(v) => save({ autoUpdate: v })} />
         </SettingRow>
         {settings.autoUpdate && (
-          <SettingRow title="Frequency" subtitle="Counted from the last completed whole-library update. Category updates don't move it.">
+          <SettingRow title="Frequency" subtitle="Counted from the later of the last completed whole-library update or the last automatic attempt. Category updates don't move it.">
             <select
+              aria-label="Automatic update frequency"
               value={settings.intervalHours}
               onChange={(e) => save({ intervalHours: Number(e.target.value) })}
               className="h-8 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-elevated)] px-2 text-[12.5px] text-[var(--text-primary)]"
@@ -194,27 +196,32 @@ function LibraryUpdatesSection({ state }: { state: ReaderState }) {
           </SettingRow>
         )}
         <SettingRow title="Skip completed novels" subtitle="Novels marked completed are not checked.">
-          <ToggleSwitch checked={settings.skipCompleted} onChange={(v) => save({ skipCompleted: v })} />
+          <ToggleSwitch label="Skip completed novels" checked={settings.skipCompleted} onChange={(v) => save({ skipCompleted: v })} />
         </SettingRow>
         <SettingRow
           title="Parallel checks"
           subtitle="Novels checked at once. Each source still gets one request at a time."
         >
-          <div className="inline-flex items-center gap-1">
-            {[1, 2, 4, 6, 8].map((n) => (
-              <button
-                key={n}
-                type="button"
-                onClick={() => save({ concurrency: n })}
-                className={`h-7 w-7 rounded-lg text-[12px] font-medium tabular-nums transition-colors ${
-                  settings.concurrency === n
-                    ? "bg-[var(--accent-soft)] text-[var(--accent)]"
-                    : "text-[var(--text-secondary)] hover:bg-[var(--row-hover)] hover:text-[var(--text-primary)]"
-                }`}
-              >
-                {n}
-              </button>
-            ))}
+          <div role="group" aria-label="Parallel checks" className="inline-flex items-center gap-1">
+            {[1, 2, 4, 6, 8].map((n) => {
+              const selected = settings.concurrency === n;
+              return (
+                <button
+                  key={n}
+                  type="button"
+                  aria-pressed={selected}
+                  aria-label={`${n} at once`}
+                  onClick={() => save({ concurrency: n })}
+                  className={`h-7 w-7 rounded-lg border text-[12px] tabular-nums transition-colors ${
+                    selected
+                      ? "border-[var(--accent)] bg-[var(--accent-soft)] font-bold text-[var(--accent)] underline underline-offset-2"
+                      : "border-transparent font-medium text-[var(--text-secondary)] hover:bg-[var(--row-hover)] hover:text-[var(--text-primary)]"
+                  }`}
+                >
+                  {n}
+                </button>
+              );
+            })}
           </div>
         </SettingRow>
       </div>

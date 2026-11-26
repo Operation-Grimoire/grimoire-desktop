@@ -78,6 +78,7 @@ export function HistoryView({
               </div>
             </div>
             <ToggleSwitch
+              label="Record opened chapters"
               checked={state.historyRecording}
               onChange={(checked) => rpc("setHistoryRecording", { enabled: checked })}
             />
@@ -199,15 +200,19 @@ export function HistoryView({
 export function ToggleSwitch({
   checked,
   onChange,
+  label,
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
+  /** Accessible name; the switch itself has no visible text. */
+  label: string;
 }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label}
       onClick={() => onChange(!checked)}
       className={`relative h-6 w-10 shrink-0 rounded-full transition-colors duration-150 ${
         checked ? "bg-[var(--accent)]" : "bg-[var(--border-strong)]"
