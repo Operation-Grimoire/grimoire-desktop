@@ -225,7 +225,7 @@ function LibraryUpdatesSection({ state }: { state: ReaderState }) {
           Last update {new Date(state.lastLibraryUpdate.finishedAt).toLocaleString()} ·{" "}
           {state.lastLibraryUpdate.newChapters} new
           {state.lastLibraryUpdate.errors > 0 ? ` · ${state.lastLibraryUpdate.errors} failed` : ""}
-          {state.lastLibraryUpdate.cancelled ? " · cancelled" : ""}
+          {state.lastLibraryUpdate.failed ? " · failed" : state.lastLibraryUpdate.cancelled ? " · cancelled" : ""}
         </div>
       )}
     </section>

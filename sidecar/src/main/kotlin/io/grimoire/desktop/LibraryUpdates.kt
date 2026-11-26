@@ -87,17 +87,22 @@ data class LibraryUpdateSummary(
     val warnings: Int,
     val errors: Int,
     val cancelled: Boolean = false,
+    /** The run stopped on an unexpected error, as opposed to a user or shutdown cancel. */
+    val failed: Boolean = false,
+    /** Null for a whole-library run. */
+    val categoryId: Long? = null,
 ) {
     fun encode(): String = JSONObject().put("finishedAt", finishedAt).put("checked", checked)
         .put("newChapters", newChapters).put("warnings", warnings).put("errors", errors)
-        .put("cancelled", cancelled).toString()
+        .put("cancelled", cancelled).put("failed", failed).put("categoryId", categoryId ?: JSONObject.NULL).toString()
 
     companion object {
         fun decode(text: String?): LibraryUpdateSummary? = text?.let {
             runCatching {
                 val r = JSONObject(it)
                 LibraryUpdateSummary(r.getLong("finishedAt"), r.getInt("checked"), r.getInt("newChapters"),
-                    r.getInt("warnings"), r.getInt("errors"), r.optBoolean("cancelled", false))
+                    r.getInt("warnings"), r.getInt("errors"), r.optBoolean("cancelled", false),
+                    r.optBoolean("failed", false), if (r.isNull("categoryId")) null else r.getLong("categoryId"))
             }.getOrNull()
         }
     }

@@ -123,6 +123,7 @@ class ReaderModel(
     private val updaterScope = CoroutineScope(SupervisorJob() + operationDispatcher)
     private val updater = LibraryUpdater(library) { id -> extensionFor(id)?.source }
     private var libraryUpdateJob: Job? = null
+    private val publishLock = Any()
     // The history worker is drained separately from navigation jobs before closing the store.
     private val historyScope = CoroutineScope(SupervisorJob() + operationDispatcher)
     private val historyWrites = OpenedHistoryWrites(historyScope, DesktopOpenedHistoryDao(library)) { failure ->
@@ -402,7 +403,7 @@ class ReaderModel(
                 val saved = library.saved()
                 publishView { it.leaveBook(section).copy(library = saved) }
             }
-            View.UPDATES -> {
+            View.UPDATES -> synchronized(publishLock) {
                 val saved = library.saved()
                 val feed = library.libraryUpdates()
                 val issues = library.updateIssues()
@@ -646,6 +647,7 @@ class ReaderModel(
         val errors = AtomicInteger()
         val lastPublish = AtomicLong(0L)
         var finished = false
+        var failed = false
         try {
             val settings = state.value.libraryUpdateSettings
             val targets = library.saved().filter { book ->
@@ -684,19 +686,26 @@ class ReaderModel(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
+            failed = true
             mutable.update { it.copy(error = "Library update failed: ${failure.message ?: failure.javaClass.simpleName}") }
         } finally {
             val summary = LibraryUpdateSummary(System.currentTimeMillis(), checked.get(), found.get(), warnings.get(),
-                errors.get(), cancelled = !finished)
+                errors.get(), cancelled = !finished && !failed, failed = failed, categoryId = categoryId)
             if (!closing.get()) withContext(NonCancellable) {
                 runCatching { library.setLastLibraryUpdate(summary) }
+                // Only a completed whole-library run moves the schedule.
+                if (finished && categoryId == null) runCatching { library.setLastFullLibraryUpdate(summary.finishedAt) }
                 runCatching { publishUpdateResults(null) }
             }
             mutable.update { it.copy(libraryUpdate = null, lastLibraryUpdate = summary) }
         }
     }
 
-    private fun publishUpdateResults(key: NovelKey?) {
+    /**
+     * Snapshot and publish happen under one lock, so a slower publisher can never put back
+     * rows that a newer one (a later novel, a removal, a dismissal) already replaced.
+     */
+    private fun publishUpdateResults(key: NovelKey?) = synchronized(publishLock) {
         val saved = library.saved()
         val feed = library.libraryUpdates()
         val issues = library.updateIssues()
@@ -718,7 +727,7 @@ class ReaderModel(
                 val current = state.value
                 val settings = current.libraryUpdateSettings
                 if (!settings.autoUpdate) continue
-                val last = current.lastLibraryUpdate?.finishedAt ?: 0L
+                val last = runCatching { library.lastFullLibraryUpdate() }.getOrNull() ?: 0L
                 if (System.currentTimeMillis() - last >= settings.intervalHours * 3_600_000L) startScheduledUpdate()
             }
         }
@@ -759,22 +768,22 @@ class ReaderModel(
 
     fun dismissUpdateIssue(key: NovelKey) = background("Could not dismiss the issue") {
         library.clearUpdateIssue(key)
-        mutable.update { it.copy(updateIssues = library.updateIssues()) }
+        publishUpdateResults(null)
     }
 
     fun clearUpdateIssues() = background("Could not clear issues") {
         library.clearUpdateIssues()
-        mutable.update { it.copy(updateIssues = emptyList()) }
+        publishUpdateResults(null)
     }
 
     fun removeUpdates(ids: List<Long>) = background("Could not remove updates") {
         library.deleteLibraryUpdates(ids)
-        mutable.update { it.copy(updates = library.libraryUpdates()) }
+        publishUpdateResults(null)
     }
 
     fun clearUpdates() = background("Could not clear updates") {
         library.clearLibraryUpdates()
-        mutable.update { it.copy(updates = emptyList()) }
+        publishUpdateResults(null)
     }
 
     fun markUpdatesRead(ids: List<Long>, read: Boolean) = background("Could not update read state") {

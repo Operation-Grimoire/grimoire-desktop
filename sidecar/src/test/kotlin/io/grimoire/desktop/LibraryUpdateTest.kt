@@ -140,14 +140,17 @@ class LibraryUpdateTest {
         LocalLibrary(dir).use { lib ->
             assertEquals(LibraryUpdateSettings(), lib.libraryUpdateSettings())
             lib.setLibraryUpdateSettings(LibraryUpdateSettings(updateOnLaunch = true, autoUpdate = true, intervalHours = 999, concurrency = 0))
-            lib.setLastLibraryUpdate(LibraryUpdateSummary(9L, 3, 2, 1, 0))
+            lib.setLastLibraryUpdate(LibraryUpdateSummary(9L, 3, 2, 1, 0, failed = true, categoryId = 4L))
+            assertNull(lib.lastFullLibraryUpdate())
+            lib.setLastFullLibraryUpdate(8L)
         }
         LocalLibrary(dir).use { lib ->
             val s = lib.libraryUpdateSettings()
             assertTrue(s.updateOnLaunch && s.autoUpdate)
             assertEquals(LibraryUpdateSettings.MAX_INTERVAL_HOURS, s.intervalHours)
             assertEquals(1, s.concurrency)
-            assertEquals(LibraryUpdateSummary(9L, 3, 2, 1, 0), lib.lastLibraryUpdate())
+            assertEquals(LibraryUpdateSummary(9L, 3, 2, 1, 0, failed = true, categoryId = 4L), lib.lastLibraryUpdate())
+            assertEquals(8L, lib.lastFullLibraryUpdate())
         }
         assertEquals(LibraryUpdateSettings(), LibraryUpdateSettings.decode("{not json"))
     }

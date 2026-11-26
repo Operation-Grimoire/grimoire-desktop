@@ -283,6 +283,17 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
         write { setSetting("library_update_last", summary.encode()) }
     }
 
+    /** When the last completed whole-library update finished; drives the schedule. */
+    @Synchronized internal fun lastFullLibraryUpdate(): Long? {
+        database.verifyMarker()
+        return db.query("SELECT value FROM settings WHERE name='library_update_last_full'") { it.getString(1) }
+            .singleOrNull()?.toLongOrNull()
+    }
+
+    @Synchronized internal fun setLastFullLibraryUpdate(at: Long) {
+        write { setSetting("library_update_last_full", at.toString()) }
+    }
+
     @Synchronized fun favorite(key: NovelKey, value: Boolean): SavedBook = updateMembership(key, value) ?: error("Novel is no longer stored")
 
     @Synchronized internal fun historyRecording(): Boolean {

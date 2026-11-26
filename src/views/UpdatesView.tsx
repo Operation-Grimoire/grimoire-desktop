@@ -401,7 +401,8 @@ function LastRunLine({
   return (
     <div className="mb-5 flex items-center gap-2 text-[12px] text-[var(--text-muted)]">
       <span>
-        {summary.cancelled ? "Update cancelled" : "Last updated"} {relativeTime(summary.finishedAt)} ·{" "}
+        {summary.failed ? "Update failed" : summary.cancelled ? "Update cancelled" : "Last updated"}{" "}
+        {relativeTime(summary.finishedAt)} ·{" "}
         {summary.checked} checked ·{" "}
         {summary.newChapters === 1 ? "1 new chapter" : `${summary.newChapters} new chapters`}
       </span>

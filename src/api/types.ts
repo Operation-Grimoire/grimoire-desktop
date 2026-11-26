@@ -199,6 +199,9 @@ export interface LibraryUpdateSummary {
   warnings: number;
   errors: number;
   cancelled: boolean;
+  failed: boolean;
+  /** Null for a whole-library run. */
+  categoryId: number | null;
 }
 
 export interface LibraryUpdateSettings {
