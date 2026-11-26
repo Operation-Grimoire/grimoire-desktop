@@ -25,7 +25,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let manager = SidecarManager::spawn(app.handle().clone())
-                .map_err(|err| Box::<dyn std::error::Error>::from(err))?;
+                .map_err(Box::<dyn std::error::Error>::from)?;
             app.manage(manager);
             Ok(())
         })

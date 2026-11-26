@@ -28,11 +28,31 @@ data class SavedBook(
     val downloaded: Set<String> = emptySet(),
     val position: ReadPosition? = null,
     val resumeChapterUrl: String? = null,
-)
+    val categoryId: Long? = null,
+    val lastReadAt: Long = 0L,
+    val lastUpdated: Long = 0L,
+    val addedAt: Long = 0L,
+    val userRating: Int? = null,
+    val readerTextAlign: ReaderTextAlign = ReaderTextAlign.AUTO,
+    val chapterSortOrder: ChapterSort = ChapterSort.NUMBER_ASC,
+    val overrides: NovelOverrides = NovelOverrides(),
+    val readChapters: Set<String> = emptySet(),
+) {
+    /** Effective novel metadata with user overrides winning over source fields. */
+    fun effectiveNovel(): Novel = novel.copy(
+        title = overrides.title ?: novel.title,
+        author = overrides.author ?: novel.author,
+        description = overrides.description ?: novel.description,
+        status = overrides.status ?: novel.status,
+        genres = overrides.genres ?: novel.genres,
+        thumbnailUrl = overrides.customCoverUrl ?: novel.thumbnailUrl,
+    )
+}
 
 internal fun SavedBook.resumeChapter(): Chapter? =
     chapters.find { it.url == resumeChapterUrl && !it.locked }
         ?: chapters.find { it.url == position?.chapterUrl && !it.locked }
+        ?: readingOrder(chapters).firstOrNull { !it.locked && it.url !in readChapters }
 
 /** Desktop facade; SQL owns committed state, pending positions stay off the UI's disk path. */
 class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageCheckpoint) -> Unit) : Closeable {
@@ -60,9 +80,13 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
         val key = NovelKey(row.getLong(1), row.getString(2))
         val downloaded = db.query("SELECT chapter_url FROM contents WHERE source_id=? AND novel_url=? AND has_content=1",
             key.sourceId, key.url) { it.getString(1) }
+        val readChapters = db.query("SELECT chapter_url, state FROM reading_states WHERE source_id=? AND novel_url=?",
+            key.sourceId, key.url) { r ->
+            r.getString(1) to runCatching { decodeReadingStateRecord(r.getString(2)).value.status == ReadStatus.READ }.getOrDefault(false)
+        }.filter { it.second }.mapTo(LinkedHashSet()) { it.first }
         return decodeBook(JSONObject(row.getString(3)).put("downloaded", JSONArray(downloaded))).also {
             require(it.key == key) { "Desktop novel identity mismatch" }
-        }.let { it.copy(position = pendingPositions[key] ?: it.position) }
+        }.let { it.copy(position = pendingPositions[key] ?: it.position, readChapters = readChapters) }
     }
     private fun refresh(): List<SavedBook> = readBooks().also { positionBooks = it.associateBy { b -> b.key } }
     private fun <T> write(beforeCommit: () -> Unit = {}, invalidatesPositionEligibility: Boolean = false, action: () -> T): T = try {
@@ -96,8 +120,23 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
         require(novel.url == key.url && chapters.map { it.url }.distinct().size == chapters.size)
         write(invalidatesPositionEligibility = true) {
             val old = book(key)
-            val metadata = SavedBook(key, novel, chapters, old?.favorite ?: false, position = old?.position,
-                resumeChapterUrl = old?.resumeChapterUrl)
+            val now = System.currentTimeMillis()
+            val metadata = SavedBook(
+                key = key,
+                novel = novel,
+                chapters = chapters,
+                favorite = old?.favorite ?: false,
+                position = old?.position,
+                resumeChapterUrl = old?.resumeChapterUrl,
+                categoryId = old?.categoryId,
+                lastReadAt = old?.lastReadAt ?: 0L,
+                lastUpdated = now,
+                addedAt = old?.addedAt ?: 0L,
+                userRating = old?.userRating,
+                readerTextAlign = old?.readerTextAlign ?: ReaderTextAlign.AUTO,
+                chapterSortOrder = old?.chapterSortOrder ?: ChapterSort.NUMBER_ASC,
+                overrides = old?.overrides ?: NovelOverrides(),
+            )
             db.execute("INSERT INTO books VALUES(?,?,?) ON CONFLICT(source_id,novel_url) DO UPDATE SET metadata=excluded.metadata",
                 key.sourceId, key.url, encodeBook(metadata).apply { remove("downloaded") }.toString())
             db.query("SELECT chapter_url FROM reading_states WHERE source_id=? AND novel_url=?", key.sourceId, key.url) { it.getString(1) }
@@ -200,17 +239,68 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
     @Synchronized internal fun selectResumeChapter(key: ChapterKey): SavedBook = write {
         require(eligibility(key) == null) { "Chapter is unavailable or locked" }
         val current = requireNotNull(book(key.novel))
-        if (current.resumeChapterUrl != key.url) db.execute("UPDATE books SET metadata=? WHERE source_id=? AND novel_url=?",
-            encodeBook(current.copy(resumeChapterUrl = key.url)).apply { remove("downloaded") }.toString(), key.novel.sourceId, key.novel.url)
+        val updated = current.copy(resumeChapterUrl = key.url, lastReadAt = System.currentTimeMillis())
+        db.execute("UPDATE books SET metadata=? WHERE source_id=? AND novel_url=?",
+            encodeBook(updated).apply { remove("downloaded") }.toString(), key.novel.sourceId, key.novel.url)
         requireNotNull(book(key.novel))
     }
     @Synchronized internal fun updateMembership(key: NovelKey, value: Boolean): SavedBook? {
         write {
             val current = book(key) ?: return@write
+            val addedAt = if (value && current.addedAt == 0L) System.currentTimeMillis() else current.addedAt
             db.execute("UPDATE books SET metadata=? WHERE source_id=? AND novel_url=?",
-                encodeBook(current.copy(favorite = value)).apply { remove("downloaded") }.toString(), key.sourceId, key.url)
+                encodeBook(current.copy(favorite = value, addedAt = addedAt)).apply { remove("downloaded") }.toString(), key.sourceId, key.url)
         }
         return book(key)
+    }
+
+    @Synchronized internal fun updateBookMetadata(key: NovelKey, transform: (SavedBook) -> SavedBook): SavedBook? {
+        write {
+            val current = book(key) ?: return@write
+            val updated = transform(current)
+            db.execute("UPDATE books SET metadata=? WHERE source_id=? AND novel_url=?",
+                encodeBook(updated).apply { remove("downloaded") }.toString(), key.sourceId, key.url)
+        }
+        return book(key)
+    }
+
+    @Synchronized fun categories(): List<DesktopCategory> {
+        database.verifyMarker()
+        return db.query("SELECT id,name,sort_order,is_default,is_hidden FROM categories ORDER BY sort_order ASC, id ASC") { r ->
+            DesktopCategory(r.getLong(1), r.getString(2), r.getInt(3), r.getInt(4) == 1, r.getInt(5) == 1)
+        }
+    }
+
+    @Synchronized fun createCategory(name: String): List<DesktopCategory> {
+        val clean = name.trim()
+        require(clean.isNotEmpty()) { "Category name cannot be empty" }
+        write {
+            val nextOrder = db.query("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM categories") { it.getInt(1) }.single()
+            db.execute("INSERT INTO categories(name,sort_order,is_default,is_hidden) VALUES(?,?,0,0)", clean, nextOrder)
+        }
+        return categories()
+    }
+
+    @Synchronized fun renameCategory(id: Long, name: String): List<DesktopCategory> {
+        val clean = name.trim()
+        require(clean.isNotEmpty()) { "Category name cannot be empty" }
+        write {
+            db.execute("UPDATE categories SET name=? WHERE id=?", clean, id)
+        }
+        return categories()
+    }
+
+    @Synchronized fun deleteCategory(id: Long): List<DesktopCategory> {
+        write {
+            db.execute("DELETE FROM categories WHERE id=?", id)
+            // Detach books that belonged to the deleted category.
+            readBooks().filter { it.categoryId == id }.forEach { book ->
+                db.execute("UPDATE books SET metadata=? WHERE source_id=? AND novel_url=?",
+                    encodeBook(book.copy(categoryId = null)).apply { remove("downloaded") }.toString(),
+                    book.key.sourceId, book.key.url)
+            }
+        }
+        return categories()
     }
 
     @Synchronized fun downloaded(key: ChapterKey): List<NovelPage>? = readSavedContent(key)?.let(::decodeChapterContent)

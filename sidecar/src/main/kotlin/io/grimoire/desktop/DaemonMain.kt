@@ -3,6 +3,7 @@ package io.grimoire.desktop
 import com.sun.net.httpserver.HttpServer
 import io.grimoire.api.model.novel.Chapter
 import io.grimoire.api.model.novel.Novel
+import io.grimoire.api.model.novel.NovelStatus
 import io.grimoire.api.model.novel.PageContent
 import io.grimoire.api.network.SourceNetwork
 import io.grimoire.reading.ChapterKey
@@ -141,6 +142,76 @@ private fun dispatchMethod(method: String, params: JSONObject, model: ReaderMode
         "confirmRepository" -> model.confirmRepository()
         "cancelRepository" -> model.cancelRepository()
         "clearHistory" -> model.clearHistory()
+        "refreshBook" -> model.refreshBook()
+        "markCurrentChapterRead" -> model.markCurrentChapterRead()
+
+        "markChaptersRead" -> {
+            val arr = params.getJSONArray("chapterUrls")
+            val urls = (0 until arr.length()).map(arr::getString)
+            model.markChaptersRead(urls, params.getBoolean("read"))
+        }
+
+        "downloadChapters" -> {
+            val arr = params.getJSONArray("chapterUrls")
+            val urls = (0 until arr.length()).map(arr::getString)
+            model.downloadChapters(urls)
+        }
+
+        "deleteDownloads" -> {
+            val arr = params.getJSONArray("chapterUrls")
+            val urls = (0 until arr.length()).map(arr::getString)
+            model.deleteDownloads(urls)
+        }
+
+        "removeFromLibrary" -> model.removeFromLibrary(
+            NovelKey(params.getLong("sourceId"), params.getString("novelUrl")),
+        )
+
+        "createCategory" -> model.createCategory(params.getString("name"))
+        "renameCategory" -> model.renameCategory(params.getLong("id"), params.getString("name"))
+        "deleteCategory" -> model.deleteCategory(params.getLong("id"))
+
+        "setBookCategory" -> model.setBookCategory(
+            NovelKey(params.getLong("sourceId"), params.getString("novelUrl")),
+            if (params.has("categoryId") && !params.isNull("categoryId")) params.getLong("categoryId") else null,
+        )
+
+        "setBookRating" -> model.setBookRating(
+            NovelKey(params.getLong("sourceId"), params.getString("novelUrl")),
+            if (params.has("rating") && !params.isNull("rating")) params.getInt("rating") else null,
+        )
+
+        "setBookChapterSort" -> model.setBookChapterSort(
+            NovelKey(params.getLong("sourceId"), params.getString("novelUrl")),
+            ChapterSort.valueOf(params.getString("sort")),
+        )
+
+        "setBookTextAlign" -> model.setBookTextAlign(
+            NovelKey(params.getLong("sourceId"), params.getString("novelUrl")),
+            ReaderTextAlign.valueOf(params.getString("textAlign")),
+        )
+
+        "setBookOverrides" -> {
+            val key = NovelKey(params.getLong("sourceId"), params.getString("novelUrl"))
+            val ov = params.optJSONObject("overrides") ?: JSONObject()
+            fun optStr(k: String): String? =
+                if (ov.has(k) && !ov.isNull(k)) ov.getString(k).trim().takeIf { it.isNotEmpty() } else null
+            val genres = if (ov.has("genres") && !ov.isNull("genres")) {
+                ov.getJSONArray("genres").let { a -> (0 until a.length()).map { a.getString(it).trim() }.filter { it.isNotEmpty() } }
+            } else null
+            val status = optStr("status")?.let { s -> NovelStatus.entries.firstOrNull { it.name == s } }
+            model.setBookOverrides(
+                key,
+                NovelOverrides(
+                    title = optStr("title"),
+                    author = optStr("author"),
+                    description = optStr("description"),
+                    status = status,
+                    genres = genres,
+                    customCoverUrl = optStr("customCoverUrl"),
+                ),
+            )
+        }
 
         "selectSource" -> model.selectSource(params.getLong("sourceId"))
         "setBrowseMode" -> model.setBrowseMode(BrowseMode.valueOf(params.getString("mode")))
@@ -165,6 +236,9 @@ private fun dispatchMethod(method: String, params: JSONObject, model: ReaderMode
                 showChapterPercent = if (params.has("showChapterPercent")) params.getBoolean("showChapterPercent") else current.showChapterPercent,
                 showBookPercent = if (params.has("showBookPercent")) params.getBoolean("showBookPercent") else current.showBookPercent,
                 grimoireEasterEgg = if (params.has("grimoireEasterEgg")) params.getBoolean("grimoireEasterEgg") else current.grimoireEasterEgg,
+                markAsReadStrategy = params.optString("markAsReadStrategy", "").takeIf { it.isNotEmpty() }
+                    ?.let(MarkAsReadStrategy::valueOf) ?: current.markAsReadStrategy,
+                markAsReadThreshold = params.optInt("markAsReadThreshold", current.markAsReadThreshold),
             )
             model.setReaderSettings(updated)
         }
@@ -308,6 +382,14 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
             .put("extensionCount", p.catalog.extensions.size)
             .put("warning", p.warning ?: JSONObject.NULL)
     } ?: JSONObject.NULL)
+    .put("categories", JSONArray(categories.map { c ->
+        JSONObject()
+            .put("id", c.id)
+            .put("name", c.name)
+            .put("sortOrder", c.sortOrder)
+            .put("isDefault", c.isDefault)
+            .put("isHidden", c.isHidden)
+    }))
     .put("appearance", JSONObject()
         .put("themeMode", appearance.themeMode.name)
         .put("colorTheme", appearance.colorTheme.name))
@@ -320,7 +402,9 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
         .put("textAlign", readerSettings.textAlign.name)
         .put("showChapterPercent", readerSettings.showChapterPercent)
         .put("showBookPercent", readerSettings.showBookPercent)
-        .put("grimoireEasterEgg", readerSettings.grimoireEasterEgg))
+        .put("grimoireEasterEgg", readerSettings.grimoireEasterEgg)
+        .put("markAsReadStrategy", readerSettings.markAsReadStrategy.name)
+        .put("markAsReadThreshold", readerSettings.markAsReadThreshold))
 
 private fun Novel.toJson(): JSONObject = JSONObject()
     .put("url", url)
@@ -336,19 +420,42 @@ private fun Chapter.toJson(): JSONObject = JSONObject()
     .put("url", url)
     .put("name", name)
     .put("chapterNumber", chapterNumber.toDouble())
+    .put("uploadDate", uploadDate)
     .put("locked", locked)
 
 private fun SavedBook.toJson(includeChapters: Boolean): JSONObject {
     val chapterUrls = chapters.mapTo(HashSet(chapters.size)) { it.url }
     val downloadedCount = downloaded.count { it in chapterUrls }
+    val readCount = readChapters.count { it in chapterUrls }
     val lockedCount = chapters.count { it.locked }
+    val readableTotal = (chapters.size - lockedCount).coerceAtLeast(0)
+    val unreadCount = (readableTotal - readCount).coerceAtLeast(0)
+    val effective = effectiveNovel()
+    val ov = JSONObject()
+        .put("title", overrides.title ?: JSONObject.NULL)
+        .put("author", overrides.author ?: JSONObject.NULL)
+        .put("description", overrides.description ?: JSONObject.NULL)
+        .put("status", overrides.status?.name ?: JSONObject.NULL)
+        .put("genres", overrides.genres?.let { JSONArray(it) } ?: JSONObject.NULL)
+        .put("customCoverUrl", overrides.customCoverUrl ?: JSONObject.NULL)
     val obj = JSONObject()
         .put("sourceId", key.sourceId)
         .put("novelUrl", key.url)
-        .put("novel", novel.toJson())
+        .put("novel", effective.toJson())
+        .put("sourceNovel", novel.toJson())
+        .put("overrides", ov)
         .put("favorite", favorite)
+        .put("categoryId", categoryId ?: JSONObject.NULL)
+        .put("lastReadAt", lastReadAt)
+        .put("lastUpdated", lastUpdated)
+        .put("addedAt", addedAt)
+        .put("userRating", userRating ?: JSONObject.NULL)
+        .put("readerTextAlign", readerTextAlign.name)
+        .put("chapterSortOrder", chapterSortOrder.name)
         .put("totalChapters", chapters.size)
         .put("downloadedCount", downloadedCount)
+        .put("readCount", readCount)
+        .put("unreadCount", unreadCount)
         .put("lockedCount", lockedCount)
         .put("resumeChapterUrl", resumeChapter()?.url ?: JSONObject.NULL)
         .put("position", position?.let {
@@ -357,7 +464,9 @@ private fun SavedBook.toJson(includeChapters: Boolean): JSONObject {
     if (includeChapters) {
         val ordered = readingOrder(chapters)
         obj.put("chapters", JSONArray(ordered.map { ch ->
-            ch.toJson().put("downloaded", ch.url in downloaded)
+            ch.toJson()
+                .put("downloaded", ch.url in downloaded)
+                .put("read", ch.url in readChapters)
         }))
     }
     return obj
