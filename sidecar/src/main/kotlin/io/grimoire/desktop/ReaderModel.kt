@@ -27,7 +27,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -79,6 +81,9 @@ data class ReaderState(
     val libraryUpdateSettings: LibraryUpdateSettings = LibraryUpdateSettings(),
     /** Novels whose single-novel retry is running from the issues list. */
     val retryingIssues: Set<NovelKey> = emptySet(),
+    val autoBackup: AutoBackupSettings = AutoBackupSettings(),
+    val lastAutoBackup: AutoBackupStatus? = null,
+    val autoBackupRunning: Boolean = false,
 )
 
 data class BrowseSource(val sourceId: Long, val name: String, val lang: String)
@@ -119,8 +124,12 @@ class ReaderModel(
             updateIssues = library.updateIssues(),
             lastLibraryUpdate = library.lastLibraryUpdate(),
             libraryUpdateSettings = library.libraryUpdateSettings(),
+            autoBackup = library.autoBackupSettings(),
+            lastAutoBackup = library.lastAutoBackup(),
         ),
     )
+    // Backups and restores never overlap, so a backup never captures a half-restored library.
+    private val backupLock = Mutex()
     // Library refreshes run beside navigation instead of claiming the busy flag.
     private val updaterScope = CoroutineScope(SupervisorJob() + operationDispatcher)
     private val updater = LibraryUpdater(library) { id -> extensionFor(id)?.source }
@@ -157,7 +166,10 @@ class ReaderModel(
                 mutable.update { it.copy(extensionNotice = "Could not load installed extensions: ${failure.message}") }
             }
         }
-        if (startScheduler) startLibraryUpdateScheduler()
+        if (startScheduler) {
+            startLibraryUpdateScheduler()
+            startAutoBackupScheduler()
+        }
     }
 
     private fun extensionFor(sourceId: Long?): LocalExtension? = sourceId?.let { id ->
@@ -866,15 +878,93 @@ class ReaderModel(
     /** Writes an Android-compatible backup of the library and reading state to [path]. */
     fun createBackup(path: Path) = operate {
         mutable.update { it.copy(backupNotice = "Writing ${path.fileName}…") }
-        reportBackupFailure("Backup failed") { writeLibraryBackup(path) }
+        reportBackupFailure("Backup failed") {
+            val count = backupLock.withLock { writeLibraryBackup(path) }
+            mutable.update { it.copy(backupNotice = "Backed up ${plural(count, "novel")} to ${path.fileName}") }
+        }
     }
 
-    private fun writeLibraryBackup(path: Path) {
+    /** Writes a backup to [path] and returns how many novels it holds. */
+    private fun writeLibraryBackup(path: Path): Int {
         val books = library.allBooks()
         writeBackup(path, books, library.categories(), extensions?.repositoryViews().orEmpty(),
             System.getProperty("grimoire.version") ?: "dev", System.currentTimeMillis())
-        val count = books.count { it.favorite || it.readChapters.isNotEmpty() }
-        mutable.update { it.copy(backupNotice = "Backed up ${plural(count, "novel")} to ${path.fileName}") }
+        return books.count { it.favorite || it.readChapters.isNotEmpty() }
+    }
+
+    /** Backs up into the chosen folder now, whether or not one is due. */
+    fun backUpNow() {
+        synchronized(operationLock) {
+            if (closing.get() || state.value.autoBackupRunning) return
+            updaterScope.launch { runAutoBackup() }
+        }
+    }
+
+    /** Like [changeLibraryUpdateSettings]: applied at once, saved in order. */
+    fun changeAutoBackupSettings(change: (AutoBackupSettings) -> AutoBackupSettings) {
+        val value = synchronized(operationLock) {
+            if (closing.get()) return
+            val next = change(state.value.autoBackup).normalized()
+            mutable.update { it.copy(autoBackup = next) }
+            next
+        }
+        background("Could not save automatic backup settings") { library.setAutoBackupSettings(value) }
+    }
+
+    /** Checks once a minute while the app is open; a missed backup runs on the next launch. */
+    private fun startAutoBackupScheduler() {
+        updaterScope.launch {
+            delay(LAUNCH_BACKUP_DELAY_MS)
+            while (isActive) {
+                val due = nextAutoBackupAt(state.value.autoBackup, state.value.lastAutoBackup)
+                if (due != null && System.currentTimeMillis() >= due) runAutoBackup()
+                delay(SCHEDULER_TICK_MS)
+            }
+        }
+    }
+
+    private suspend fun runAutoBackup() {
+        // A manual backup or restore is running; the next tick tries again.
+        if (closing.get() || !backupLock.tryLock()) return
+        try {
+            mutable.update { it.copy(autoBackupRunning = true) }
+            val status = withContext(Dispatchers.IO) { writeAutoBackup(state.value.autoBackup) }
+            if (!closing.get()) runCatching { library.setLastAutoBackup(status) }
+            mutable.update { it.copy(lastAutoBackup = status) }
+        } finally {
+            mutable.update { it.copy(autoBackupRunning = false) }
+            backupLock.unlock()
+        }
+    }
+
+    private fun writeAutoBackup(settings: AutoBackupSettings): AutoBackupStatus {
+        val now = System.currentTimeMillis()
+        return try {
+            require(settings.folder.isNotBlank()) { "Choose a backup folder" }
+            val folder = Paths.get(settings.folder)
+            // A missing folder is usually an unplugged drive; never recreate it somewhere unexpected.
+            check(Files.isDirectory(folder)) { "Backup folder not found: ${settings.folder}" }
+            val books = library.allBooks()
+            // An empty backup would only push older, useful ones out of the rotation.
+            if (books.none { it.favorite || it.readChapters.isNotEmpty() }) {
+                return AutoBackupStatus(now, true, "Nothing to back up yet", skipped = true)
+            }
+            val name = autoBackupFileName()
+            val path = folder.resolve(name)
+            // Owned before the file exists, so even an interrupted write is pruned later.
+            val owned = library.ownedAutoBackups().plus(name).toList().takeLast(OWNED_AUTO_BACKUP_LIMIT).toSet()
+            library.setOwnedAutoBackups(owned)
+            val count = writeLibraryBackup(path)
+            val removed = autoBackupsToDelete(folder, owned, path)
+                .filter { runCatching { Files.deleteIfExists(it) }.getOrDefault(false) }
+                .mapTo(HashSet()) { it.fileName.toString() }
+            if (removed.isNotEmpty()) library.setOwnedAutoBackups(owned - removed)
+            AutoBackupStatus(now, true, "Backed up ${plural(count, "novel")}", name)
+        } catch (failure: java.nio.file.AccessDeniedException) {
+            AutoBackupStatus(now, false, "Grimoire can't write to ${settings.folder}")
+        } catch (failure: Exception) {
+            AutoBackupStatus(now, false, failure.message ?: failure.javaClass.simpleName)
+        }
     }
 
     /**
@@ -884,7 +974,7 @@ class ReaderModel(
      */
     fun restoreBackup(path: Path) = operate {
         mutable.update { it.copy(backupNotice = "Reading ${path.fileName}…") }
-        reportBackupFailure("Restore failed") { restoreLibraryBackup(path) }
+        reportBackupFailure("Restore failed") { backupLock.withLock { restoreLibraryBackup(path) } }
     }
 
     /** A failure replaces the progress notice, so it never looks like work is still running. */
@@ -1242,11 +1332,14 @@ class ReaderModel(
         // Extension network calls may not be cancellable; never let one hold up shutdown for long.
         updaterScope.coroutineContext.job.children.forEach { it.cancel() }
         withTimeoutOrNull(UPDATER_SHUTDOWN_MS) { updaterScope.coroutineContext.job.children.toList().joinAll() }
+        var heldBackup = false
         try {
             // Let the claimed operation finish, then save before cancelling the usable scope.
             scope.coroutineContext.job.children.toList().joinAll()
             lastHistoryOpen?.join()
             settingsScope.coroutineContext.job.children.toList().joinAll()
+            // A backup file write ignores cancellation; let it finish before the store closes.
+            heldBackup = withTimeoutOrNull(BACKUP_SHUTDOWN_MS) { backupLock.lock(); true } == true
             withContext(Dispatchers.IO) {
                 if (!storageClosed.get()) {
                     checkpoints.retire(); flushStoredPositions(); library.close(); storageClosed.set(true)
@@ -1255,6 +1348,9 @@ class ReaderModel(
         } catch (failure: Exception) {
             synchronized(operationLock) { closing.set(false); state.value.checkpointLoad?.let(checkpoints::resume) }
             throw failure
+        } finally {
+            // Closing is set, so no backup starts after this; a repeated close must not wait on it.
+            if (heldBackup) backupLock.unlock()
         }
         scope.coroutineContext.job.cancelAndJoin()
         updaterScope.coroutineContext.job.cancel()
@@ -1317,6 +1413,10 @@ class ReaderModel(
 }
 
 private const val LAUNCH_UPDATE_DELAY_MS = 8_000L
+private const val LAUNCH_BACKUP_DELAY_MS = 20_000L
+private const val BACKUP_SHUTDOWN_MS = 30_000L
+/** Plenty for seven per folder across many folders; the oldest names drop off. */
+private const val OWNED_AUTO_BACKUP_LIMIT = 200
 
 /** Android's id for imported EPUB/TXT books. */
 private const val ANDROID_LOCAL_SOURCE_ID = 0L

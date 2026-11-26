@@ -1,10 +1,10 @@
-import type { ReactNode } from "react";
 import { Check, Monitor, Moon, RefreshCw, Sun, WifiOff } from "lucide-react";
 import type { ColorTheme, LibraryUpdateSettings, ReaderState, ThemeMode } from "../api/types";
 import { rpc } from "../api/client";
 import { HeaderBar } from "../components/HeaderBar";
 import { ToggleSwitch } from "./HistoryView";
 import { BackupSection } from "../components/BackupSection";
+import { SettingRow } from "../components/SettingRow";
 
 const PALETTES: { id: ColorTheme; label: string; dots: [string, string, string] }[] = [
   { id: "DEFAULT", label: "Default", dots: ["#a78bfa", "#c4b5fd", "#f472b6"] },
@@ -245,25 +245,5 @@ function LibraryUpdatesSection({ state }: { state: ReaderState }) {
         </div>
       )}
     </section>
-  );
-}
-
-function SettingRow({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string;
-  subtitle: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-4 px-4 py-3.5">
-      <div className="min-w-0">
-        <div className="text-[13.5px] font-medium text-[var(--text-primary)]">{title}</div>
-        <div className="text-[12px] text-[var(--text-secondary)]">{subtitle}</div>
-      </div>
-      {children}
-    </div>
   );
 }

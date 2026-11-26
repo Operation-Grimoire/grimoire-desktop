@@ -155,6 +155,14 @@ private fun dispatchMethod(method: String, params: JSONObject, model: ReaderMode
                 skipCompleted = params.optBoolean("skipCompleted", current.skipCompleted),
             )
         }
+        "setAutoBackupSettings" -> model.changeAutoBackupSettings { current ->
+            current.copy(
+                enabled = params.optBoolean("enabled", current.enabled),
+                folder = params.optString("folder", current.folder),
+                intervalHours = params.optInt("intervalHours", current.intervalHours),
+            )
+        }
+        "backUpNow" -> model.backUpNow()
         "showBrowse" -> model.showBrowse()
         "showHistory" -> model.showHistory()
         "showExtensions" -> model.showExtensions()
@@ -456,6 +464,19 @@ private fun ReaderState.toJson(): JSONObject = JSONObject()
         .put("intervalHours", libraryUpdateSettings.intervalHours)
         .put("concurrency", libraryUpdateSettings.concurrency)
         .put("skipCompleted", libraryUpdateSettings.skipCompleted))
+    .put("autoBackup", JSONObject()
+        .put("enabled", autoBackup.enabled)
+        .put("folder", autoBackup.folder)
+        .put("intervalHours", autoBackup.intervalHours)
+        .put("nextAt", nextAutoBackupAt(autoBackup, lastAutoBackup) ?: JSONObject.NULL))
+    .put("lastAutoBackup", lastAutoBackup?.let { s ->
+        JSONObject()
+            .put("at", s.at)
+            .put("success", s.success)
+            .put("message", s.message)
+            .put("fileName", s.fileName ?: JSONObject.NULL)
+    } ?: JSONObject.NULL)
+    .put("autoBackupRunning", autoBackupRunning)
     .put("appearance", JSONObject()
         .put("themeMode", appearance.themeMode.name)
         .put("colorTheme", appearance.colorTheme.name))

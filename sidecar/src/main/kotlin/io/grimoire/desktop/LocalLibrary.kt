@@ -303,6 +303,30 @@ class LocalLibrary internal constructor(directory: Path, checkpoint: (StorageChe
         write { setSetting("library_update_last_full", at.toString()) }
     }
 
+    private fun setting(name: String): String? {
+        database.verifyMarker()
+        return db.query("SELECT value FROM settings WHERE name=?", name) { it.getString(1) }.singleOrNull()
+    }
+
+    @Synchronized internal fun autoBackupSettings(): AutoBackupSettings = AutoBackupSettings.decode(setting("auto_backup"))
+
+    @Synchronized internal fun setAutoBackupSettings(settings: AutoBackupSettings) {
+        write { setSetting("auto_backup", settings.normalized().encode()) }
+    }
+
+    @Synchronized internal fun lastAutoBackup(): AutoBackupStatus? = AutoBackupStatus.decode(setting("auto_backup_last"))
+
+    @Synchronized internal fun setLastAutoBackup(status: AutoBackupStatus) {
+        write { setSetting("auto_backup_last", status.encode()) }
+    }
+
+    /** File names of automatic backups this library wrote; only these are ever pruned. */
+    @Synchronized internal fun ownedAutoBackups(): Set<String> = decodeOwnedBackups(setting("auto_backup_owned"))
+
+    @Synchronized internal fun setOwnedAutoBackups(names: Collection<String>) {
+        write { setSetting("auto_backup_owned", encodeOwnedBackups(names)) }
+    }
+
     /** Every stored novel, in or out of the library. */
     @Synchronized internal fun allBooks(): List<SavedBook> = refresh()
 
