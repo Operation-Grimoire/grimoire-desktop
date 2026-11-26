@@ -45,7 +45,7 @@ export function BrowseView({
               <select
                 aria-label="Select source"
                 value={state.browseSource ?? ""}
-                onChange={(e) => rpc("selectSource", { sourceId: Number(e.target.value) })}
+                onChange={(e) => rpc("selectSource", { sourceId: e.target.value })}
                 className="h-8 appearance-none rounded-full border border-[var(--border-hairline)] bg-[var(--bg-surface)] pl-3.5 pr-8 text-[12.5px] font-medium text-[var(--text-primary)] transition-colors hover:border-[var(--border-strong)] focus:border-[var(--accent)] focus:outline-none"
               >
                 {state.sources.map((s) => (

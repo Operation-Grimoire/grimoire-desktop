@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import type { Chapter, ChapterSort, ReaderState } from "../api/types";
 import { coverUrl, rpc } from "../api/client";
+import { renderSafeHtml } from "../utils/safeHtml";
 import { HeaderBar } from "../components/HeaderBar";
 import { SearchPill } from "../components/SearchPill";
 
@@ -91,6 +92,8 @@ export function BookDetailView({
 
   if (!book) return null;
 
+  // Sources often repeat genres, sometimes with different casing.
+  const genres = uniqueGenres(book.novel.genres);
   const sourceInfo = state.sources.find((s) => s.sourceId === book.sourceId);
   const sourceName = sourceInfo?.name ?? "Source uninstalled";
   const cover = coverUrl(coverBaseUrl, book.novel.thumbnailUrl);
@@ -248,9 +251,9 @@ export function BookDetailView({
                   </span>
                 </div>
 
-                {book.novel.genres.length > 0 && (
+                {genres.length > 0 && (
                   <div className="mt-3 flex flex-wrap gap-1.5">
-                    {book.novel.genres.slice(0, 12).map((genre) => (
+                    {genres.slice(0, 12).map((genre) => (
                       <span
                         key={genre}
                         className="rounded-md bg-[var(--row-hover)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)]"
@@ -418,13 +421,13 @@ export function BookDetailView({
           {/* Description */}
           {book.novel.description && (
             <div className="mt-6 rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-surface)]/55 p-4">
-              <p
+              <div
                 className={`whitespace-pre-line text-[13.5px] leading-relaxed text-[var(--text-secondary)] ${
                   expandedDesc ? "" : "line-clamp-4"
                 }`}
               >
-                {book.novel.description}
-              </p>
+                {renderSafeHtml(book.novel.description)}
+              </div>
               {book.novel.description.length > 260 && (
                 <button
                   type="button"
@@ -846,4 +849,16 @@ export function BookDetailView({
       )}
     </div>
   );
+}
+
+function uniqueGenres(genres: string[]): string[] {
+  const seen = new Set<string>();
+  return genres
+    .map((g) => g.trim())
+    .filter((g) => {
+      const key = g.toLowerCase();
+      if (!g || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
